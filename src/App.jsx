@@ -1,217 +1,2171 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import { useDB } from './db'
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useDataService } from "./db";
 
-// ── Gold Theme matching KIS logo ──
-const DARK={bg:"#0C0C0C",card:"#161616",card2:"#1C1C1C",border:"#2A2A2A",border2:"#333",text:"#F5F0E8",muted:"#A09882",dim:"#6B6355",accent:"#C9A84C",accentLight:"#E2C97E",accentDark:"#A08530",success:"#4CAF6A",warning:"#E8A840",danger:"#D45050",inputBg:"#1A1A1A",shadow:"rgba(0,0,0,0.4)",glow:"rgba(201,168,76,0.15)"};
-const LIGHT={bg:"#FAF8F3",card:"#FFFFFF",card2:"#F5F2EB",border:"#E5DFD0",border2:"#D4CDB8",text:"#1A1508",muted:"#7A7060",dim:"#A09882",accent:"#B8930F",accentLight:"#D4AF37",accentDark:"#8B6E0B",success:"#3D9E5A",warning:"#D49A30",danger:"#C94444",inputBg:"#F8F5EE",shadow:"rgba(0,0,0,0.08)",glow:"rgba(184,147,15,0.08)"};
-
-// ── Lang ──
-const LANG={
-  en:{appName:"KIS",appSub:"Repair & Wholesales",login:"Sign In",logout:"Logout",name:"Username",password:"Password",dashboard:"Dashboard",settings:"Settings",save:"Save",cancel:"Cancel",delete:"Delete",confirm:"Confirm",search:"Search...",noData:"No data",loading:"Loading...",welcome:"Welcome back",quickStats:"Quick Stats",todayDate:"Today's Date",status:"System Status",online:"Online",version:"Version"},
-  cn:{appName:"KIS",appSub:"维修与批发",login:"登录",logout:"登出",name:"用户名",password:"密码",dashboard:"仪表盘",settings:"设置",save:"保存",cancel:"取消",delete:"删除",confirm:"确认",search:"搜索...",noData:"无数据",loading:"加载中...",welcome:"欢迎回来",quickStats:"快速统计",todayDate:"今日日期",status:"系统状态",online:"在线",version:"版本"},
-};
-
-// ── Atom Logo SVG (matches KIS branding) ──
-function AtomLogo({size=40}){
-  const id="g"+Math.random().toString(36).slice(2,6);
-  return(
-    <svg viewBox="0 0 100 100" width={size} height={size} style={{flexShrink:0}}>
-      <defs>
-        <linearGradient id={id} x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#B8860B"/>
-          <stop offset="35%" stopColor="#D4AF37"/>
-          <stop offset="65%" stopColor="#E8D48B"/>
-          <stop offset="100%" stopColor="#C9A84C"/>
-        </linearGradient>
-      </defs>
-      {/* Orbits */}
-      <ellipse cx="50" cy="50" rx="44" ry="18" fill="none" stroke={`url(#${id})`} strokeWidth="3" transform="rotate(-30 50 50)"/>
-      <ellipse cx="50" cy="50" rx="44" ry="18" fill="none" stroke={`url(#${id})`} strokeWidth="3" transform="rotate(30 50 50)"/>
-      <ellipse cx="50" cy="50" rx="44" ry="18" fill="none" stroke={`url(#${id})`} strokeWidth="3" transform="rotate(90 50 50)"/>
-      {/* Core */}
-      <circle cx="50" cy="50" r="7" fill={`url(#${id})`}/>
-      {/* Electrons */}
-      <circle cx="16" cy="34" r="4" fill={`url(#${id})`}/>
-      <circle cx="84" cy="66" r="4" fill={`url(#${id})`}/>
-      <circle cx="50" cy="8" r="4" fill={`url(#${id})`}/>
-      <circle cx="50" cy="92" r="4" fill={`url(#${id})`}/>
-    </svg>
-  );
+// ── Utilities ──
+const gId=()=>Math.random().toString(36).substr(2,9);const fD=d=>new Date(d).toLocaleString("en-MY",{dateStyle:"medium",timeStyle:"short"});const td=()=>new Date().toISOString().split("T")[0];const inRange=(dateIn,from,to)=>{const d=dateIn.split("T")[0];return d>=from&&d<=to;};const vI=v=>/^\d{15}$/.test(v);const vS=v=>v.length>=2&&v.length<=20&&/^[A-Za-z0-9\-]+$/.test(v);const sjS=sj=>(sj||[]).map(s=>typeof s==="object"?(s.option?`${s.name}(${s.option})`:s.name):s).join(", ");const getUJ=(im,sn,j)=>j.filter(x=>(im&&x.imei===im)||(sn&&x.serial&&x.serial.toUpperCase()===sn.toUpperCase()));const isF=s=>s==="completed"||s==="redo-flagged";const sjN=(sj,lg)=>lg==="cn"&&sj.cn?sj.cn:sj.name;// Days since dateIn for unfinished jobs
+const daysOpen=(dateIn)=>{if(!dateIn)return 0;const ms=Date.now()-new Date(dateIn).getTime();return Math.floor(ms/86400000);};
+async function exXL(j,t,from,to,techFilter,invData){const X=await import("https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs");const preFiltered=j.filter(x=>!x.deleted&&inRange(x.dateIn,from,to)&&(!techFilter||x.techId===techFilter));
+  // Consolidate camera jobs: group by unit, merge OK lenses into single row
+  const camGroups={};const nonCamJobs=[];preFiltered.forEach(x=>{if(x.component==="camera"&&x.status==="completed"){const key=x.imei||x.serial||x.id;if(!camGroups[key])camGroups[key]=[];camGroups[key].push(x);}else{nonCamJobs.push(x);}});
+  Object.entries(camGroups).forEach(([key,camJobs])=>{const fixes=camJobs.filter(c=>{const rmk=c.remark||"";return rmk.includes(":")&&!rmk.endsWith(": OK")&&!rmk.endsWith(": Wash");});const washJob=camJobs.find(c=>(c.remark||"").includes("Wash"));const invIt=invData?invData.find(i=>(i.imei&&i.imei===key)||(i.serial&&i.serial===key)):null;const partsNote=invIt?.camPartsNote||"";const hasParts=partsNote&&partsNote!=="Original"&&partsNote!=="";if(fixes.length===0&&!hasParts){const rep=camJobs[0];nonCamJobs.push({...rep,remark:"Camera: All OK",subJobs:[]});if(washJob&&washJob.id!==rep.id)nonCamJobs.push(washJob);}else if(fixes.length===0&&hasParts){const rep=camJobs[0];nonCamJobs.push({...rep,remark:"Camera: Parts Changed — "+partsNote,subJobs:[]});if(washJob&&washJob.id!==rep.id)nonCamJobs.push(washJob);}else{fixes.forEach(f=>nonCamJobs.push(f));if(hasParts){const rep=camJobs[0];nonCamJobs.push({...rep,remark:"Camera Parts: "+partsNote,subJobs:[]});}if(washJob&&!fixes.some(f=>f.id===washJob.id))nonCamJobs.push(washJob);}});
+  const filtered=nonCamJobs.sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn));
+  // Calculate max columns needed per sub-job position
+  const sjLayouts=[];filtered.forEach(x=>{(x.subJobs||[]).forEach((sj,si)=>{const opts=(typeof sj==="object"&&sj.option?sj.option:"").split(",").map(s=>s.trim()).filter(Boolean);if(!sjLayouts[si])sjLayouts[si]=0;sjLayouts[si]=Math.max(sjLayouts[si],opts.length);});});
+  const rows=filtered.map(x=>{const tc=t.find(y=>y.id===x.techId);const invIt=invData?invData.find(i=>(x.imei&&i.imei===x.imei)||(x.serial&&i.serial&&i.serial.toUpperCase()===x.serial.toUpperCase())):null;const row={Tech:tc?.name||x.techId,Model:x.model,Storage:x.storage||"",Color:x.color||"",Batch:x.batch||"",Grade:invIt?.grade||x.grade||"",IMEI:x.imei||"",Problem:invIt?.conditionRemark||"",Type:x.jobType,Mode:x.mode||"repair",Qty:x.qty||1,Status:x.status};
+    const sjs=x.subJobs||[];for(let si=0;si<sjLayouts.length;si++){const sj=sjs[si];const n=sj?(typeof sj==="object"?sj.name:sj):"";row[`SubJob${si+1}`]=n;const opts=sj&&typeof sj==="object"&&sj.option?sj.option.split(",").map(s=>s.trim()).filter(Boolean):[];for(let oi=0;oi<(sjLayouts[si]||0);oi++){row[`SJ${si+1}_Opt${oi+1}`]=opts[oi]||"";}}
+    row.Remark=x.remark||"";row.ExtraIssues=x.extraIssues||"";row.WaitingParts=x.waitingParts?"Yes":"No";row.PartsDetail=x.partsDetail||"";row.RedoReason=x.redoReason||"";row.OutsourceTo=x.outsourceTo||"";row.OutsourceReason=x.outsourceReason||"";row.QCBy=x.qcBy||"";
+    if(invIt&&x.component==="glass"){row.LCDFault=(invIt.lcdFaults||[]).join(", ")||invIt.lcdFault||"OK";row.Shadow=invIt.glassShadow||"";row.ShadowRemark=invIt.glassShadowRemark||"";}
+    if(invIt&&x.component==="camera"){row.CamParts=invIt.camPartsNote||"Original";}
+    row.TimeIn=x.dateIn?fD(x.dateIn):"";row.TimeDone=x.dateDone?fD(x.dateDone):"";return row;});
+  const ws=X.utils.json_to_sheet(rows);const wb=X.utils.book_new();X.utils.book_append_sheet(wb,ws,"Jobs");X.writeFile(wb,`KIS_Export_${from}_${to}${techFilter?"_"+techFilter:""}.xlsx`);}
+const PMap={"ip7":"iPhone 7","ip7 plus":"iPhone 7 Plus","ip7+":"iPhone 7 Plus","ip8":"iPhone 8","ip8+":"iPhone 8 Plus","ip8 plus":"iPhone 8 Plus","ipx":"iPhone X","ipxr":"iPhone XR","ipxs":"iPhone XS","ipxs max":"iPhone XS Max","ip11":"iPhone 11","ip11 pro":"iPhone 11 Pro","ip11 pro max":"iPhone 11 Pro Max","ip12":"iPhone 12","ip12 mini":"iPhone 12 Mini","ip12 pro":"iPhone 12 Pro","ip12 pro max":"iPhone 12 Pro Max","ip13":"iPhone 13","ip13 mini":"iPhone 13 Mini","ip13 pro":"iPhone 13 Pro","ip13 pro max":"iPhone 13 Pro Max","ip14":"iPhone 14","ip14 plus":"iPhone 14 Plus","ip14 pro":"iPhone 14 Pro","ip14 pro max":"iPhone 14 Pro Max","ip15":"iPhone 15","ip15 plus":"iPhone 15 Plus","ip15 pro":"iPhone 15 Pro","ip15 pro max":"iPhone 15 Pro Max","ip16":"iPhone 16","ip16 plus":"iPhone 16 Plus","ip16 pro":"iPhone 16 Pro","ip16 pro max":"iPhone 16 Pro Max","ipse2":"iPhone SE (2nd Gen)","ipse3":"iPhone SE (3rd Gen)"};
+function mP(r){if(!r)return r;const k=r.trim().toLowerCase();if(PMap[k])return PMap[k];for(const[a,b]of Object.entries(PMap)){if(k.includes(a)||a.includes(k))return b;}for(const m of Object.keys(PM)){if(m.toLowerCase()===k)return m;}return r.trim();}
+// Clean IMEI: strip ="xxx", quotes, non-digits
+function cleanIMEI(v){if(!v)return "";const s=String(v).replace(/^="?|"$/g,"").replace(/[^\d]/g,"");return s.length===15?s:"";}
+// KIS Repair & Wholesales MODEL shorthand parser
+const KISModelMap={"7":"iPhone 7","7P":"iPhone 7 Plus","8":"iPhone 8","8P":"iPhone 8 Plus","X":"iPhone X","XR":"iPhone XR","XS":"iPhone XS","XSM":"iPhone XS Max","11":"iPhone 11","11P":"iPhone 11 Pro","11PM":"iPhone 11 Pro Max","12":"iPhone 12","12M":"iPhone 12 Mini","12P":"iPhone 12 Pro","12PM":"iPhone 12 Pro Max","13":"iPhone 13","13M":"iPhone 13 Mini","13P":"iPhone 13 Pro","13PM":"iPhone 13 Pro Max","14":"iPhone 14","14P":"iPhone 14 Pro","14PM":"iPhone 14 Pro Max","14PL":"iPhone 14 Plus","15":"iPhone 15","15P":"iPhone 15 Pro","15PM":"iPhone 15 Pro Max","15PL":"iPhone 15 Plus","16":"iPhone 16","16P":"iPhone 16 Pro","16PM":"iPhone 16 Pro Max","16PL":"iPhone 16 Plus","SE2":"iPhone SE (2nd Gen)","SE3":"iPhone SE (3rd Gen)"};
+function parseModelShorthand(modelStr){if(!modelStr)return{product:"",size:"",color:""};const parts=String(modelStr).trim().split("-");if(parts.length<2)return{product:mP(modelStr),size:"",color:""};const prefix=parts[0].toUpperCase();const size=(parts[1]||"").toUpperCase();const colorRaw=parts.slice(2).join("-")||"";const color=colorRaw?colorRaw.charAt(0).toUpperCase()+colorRaw.slice(1).toLowerCase():"";const product=KISModelMap[prefix]||mP(parts[0]);return{product,size,color};}
+function isKISFormat(headers){const h=headers.map(k=>k.toUpperCase());return h.includes("DATE SEND")||(h.includes("MODEL")&&h.includes("PROBLEM"));}
+function kisDateToBatchId(ds){if(!ds)return"BATCH-"+td().replace(/-/g,"");const s=String(ds).trim();const parts=s.split("/");if(parts.length===3){const d=parts[0].padStart(2,"0");const m=parts[1].padStart(2,"0");let y=parts[2];if(y.length===2)y="20"+y;return"BATCH-"+y+m+d;}return"BATCH-"+td().replace(/-/g,"");}
+function pCSV(t){const l=t.replace(/\r/g,"").split("\n").filter(l=>l.trim());if(l.length<2)return null;
+  // Detect KIS format from headers
+  const hdrs=l[0].split(",").map(s=>s.trim());
+  if(isKISFormat(hdrs)){
+    const hU=hdrs.map(h=>h.toUpperCase());const ci=k=>hU.indexOf(k);
+    const iDS=ci("DATE SEND"),iMOD=ci("MODEL"),iIMEI=ci("IMEI"),iFREQ=ci("FREQUENT"),iGR=ci("GRADE"),iPROB=ci("PROBLEM"),iRET=ci("RETURN DATE");
+    let batchId="";const it=[];
+    for(let i=1;i<l.length;i++){const c=l[i].split(",").map(s=>s.trim());
+      const modelRaw=iMOD>=0?c[iMOD]:"";if(!modelRaw)continue;
+      const im=cleanIMEI(iIMEI>=0?c[iIMEI]:"");if(!im)continue;
+      const parsed=parseModelShorthand(modelRaw);
+      const ds=iDS>=0?c[iDS]:"";if(!batchId)batchId=kisDateToBatchId(ds);
+      const freq=iFREQ>=0?c[iFREQ]:"";const grade=iGR>=0?c[iGR]:"";
+      const problem=iPROB>=0?c[iPROB]:"";const retDate=iRET>=0?c[iRET]:"";
+      it.push({product:parsed.product,size:parsed.size,color:parsed.color,imei:im,serial:"",grade:grade,batchId:batchId,conditionRemark:problem,codeId:"",modelNo:"",batchRemark:freq?("FREQ:"+freq):"",dateSend:ds,returnDate:retDate});
+    }
+    return it.length?{batchId,items:it}:null;
+  }
+  // Row 0 = headers, Row 1+ = data
+  // Cols: BatchID, Code ID, Product, Size, Color, ModelNo, IMEI, SerialNo, Remarks
+  let batchId="";const it=[];
+  for(let i=1;i<l.length;i++){const c=l[i].split(",").map(s=>s.trim());
+    const bid=(c[0]||"").trim();if(!batchId&&bid)batchId=bid;
+    const prod=c[2]||"";if(!prod)continue;
+    const im=cleanIMEI(c[6]);const sn=(c[7]||"").replace(/"/g,"").trim();
+    if(!im&&!sn)continue;
+    it.push({product:mP(prod),size:(c[3]||"").trim(),color:(c[4]||"").trim(),imei:im,serial:sn,grade:"",batchId:bid||batchId,conditionRemark:"",codeId:(c[1]||"").trim(),modelNo:(c[5]||"").trim(),batchRemark:(c[8]||"").trim()});
+  }
+  return it.length?{batchId,items:it}:null;}
+async function pXLSX(file){const X=await import("https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs");const buf=await file.arrayBuffer();const wb=X.read(buf);const ws=wb.Sheets[wb.SheetNames[0]];const rawRows=X.utils.sheet_to_json(ws,{defval:""});if(!rawRows.length)return null;
+  // Normalize keys: trim whitespace
+  const rows=rawRows.map(r=>{const o={};for(const k of Object.keys(r))o[k.trim()]=r[k];return o;});
+  // Detect KIS Repair & Wholesales format
+  const hdrs=Object.keys(rows[0]);
+  if(isKISFormat(hdrs)){
+    let batchId="";const it=[];
+    for(const r of rows){
+      const modelRaw=String(r.MODEL||r.Model||"").trim();if(!modelRaw)continue;
+      const im=cleanIMEI(r.IMEI||r.imei||"");if(!im)continue;
+      const parsed=parseModelShorthand(modelRaw);
+      const ds=String(r["DATE SEND"]||r["Date Send"]||"").trim();if(!batchId)batchId=kisDateToBatchId(ds);
+      const freq=String(r.FREQUENT||r.Frequent||"").trim();
+      const grade=String(r.GRADE||r.Grade||"").trim();
+      const problem=String(r.PROBLEM||r.Problem||"").trim();
+      const retDate=String(r["RETURN DATE"]||r["Return Date"]||"").trim();
+      it.push({product:parsed.product,size:parsed.size,color:parsed.color,imei:im,serial:"",grade:grade,batchId:batchId,conditionRemark:problem,codeId:"",modelNo:"",batchRemark:freq?("FREQ:"+freq):"",dateSend:ds,returnDate:retDate});
+    }
+    return it.length?{batchId,items:it}:null;
+  }
+  // Old format fallback
+  let batchId="";const it=[];
+  for(const r of rows){
+    const bid=String(r.BatchID||r.batchId||r.Batch||"").trim();if(!batchId&&bid)batchId=bid;
+    const prod=r.Product||r.product||r.Model||r.model||"";if(!prod)continue;
+    const im=cleanIMEI(r.IMEI||r.imei||"");const sn=String(r.SerialNo||r.Serial||r.serial||r.SN||"").trim();
+    if(!im&&!sn)continue;
+    it.push({product:mP(prod),size:String(r.Size||r.size||r.Storage||"").trim(),color:String(r.Color||r.color||"").trim(),imei:im,serial:sn,grade:String(r.Grade||r.grade||"").trim(),batchId:bid||batchId,conditionRemark:"",codeId:String(r["Code ID"]||r.CodeID||r.codeId||r.Code||"").trim(),modelNo:String(r.ModelNo||r.modelNo||r.Model_No||"").trim(),batchRemark:String(r.Remarks||r.remarks||r.Remark||"").trim()});
+  }
+  return it.length?{batchId,items:it}:null;}
+const LANG={en:{login:"Sign In",signing:"Signing in...",id:"Admin / Tech ID",pw:"Password",dashboard:"Dashboard",qc:"QC",batch:"Batch",inventory:"Inventory",search:"Search",techs:"Techs",subjobs:"Sub-Jobs",jobs:"Jobs",today:"Today",done:"Done",qcPending:"QC Pending",redo:"Redo",active:"Active",todayPerf:"Today's Performance",report:"Report",repair:"Repair",service:"Service",myJobs:"My Jobs",logJob:"Log Job",save:"Save",imei15:"IMEI (15 digits)",serialNum:"Serial Number",phoneModel:"Phone Model",storage:"Storage",color:"Color",grade:"Grade",batchId:"Batch ID",jobType:"Job Type",subJobs:"Sub-Jobs",remark:"Remark",scanHint:"Scan or type IMEI",eitherReq:"IMEI or Serial required",redoJob:"REDO JOB",redoDetected:"Auto-detected — previously completed/flagged",select:"Select...",qcVerify:"QC Verification",qcDesc:"Verify then Pass or flag Redo.",allClear:"No pending QC ✅",qcPass:"QC Pass",needsRedo:"Needs Redo",redoReason:"Redo Reason",redoHint:"What needs redone?",whichItem:"Which item to redo",awaitQC:"Awaiting QC",flagRedo:"Flagged for Redo",batchUpload:"Batch Upload",chooseFile:"Choose File",searchIMEI:"Search IMEI...",searchInv:"Search IMEI or Model...",bulkSearch:"Bulk Search",noResults:"No results",addTech:"Add Tech",addSubJob:"Add Sub-Job",editSubJob:"Edit Sub-Job",name:"Name",options:"Options",optionsHint:"Comma-separated",partial:"Partial",edit:"Edit",selectBatch:"Select Batch",serviceDesc:"Accessories/Parts (no QC)",repairDesc:"Scan IMEI to repair",downloadExcel:"Download Excel",qcPassRec:"QC Pass",redoRec:"Redo Records",svcRec:"Service Records",noJobs:"No jobs yet",noJobsFound:"No jobs found",notStarted:"Not Started",allBatches:"All Batches",allTechs:"All",allStatus:"All Status",notes:"Notes...",qty:"Quantity",redoIssue:"REDO ISSUE",allRecords:"All Records",techHistory:"Work History",delConfirm:"Delete this batch?",locked:"Locked",unitDetail:"Unit History",bulkHint:"Paste IMEI/Serial, one per line",deleteConfirm:"Delete this job?",resetPw:"Reset Password",newPassword:"New Password",condition:"Unit Condition",conditionHint:"Cosmetic check: scratches, dents, cracks...",todayJobs:"Today's Jobs",notInInv:"❌ Not in inventory — cannot proceed with repair",extraIssues:"Extra Issues Found",extraIssuesHint:"Additional faults discovered...",waitingParts:"Waiting for Parts",partsDetailHint:"Which parts are you waiting for?",daysWith:"days with tech",deleteJob:"Delete",repeatJob:"Repeat Last Job",editJobTitle:"Edit Job",deviceInfo:"Device Info",qcByLabel:"QC by",notifications:"Notifications",markSeen:"Mark as Read",noNotif:"No new notifications",redoQueue:"Redo Queue",redoQueueDesc:"Pick up redo jobs from any tech",noRedo:"No redo jobs pending",pickUp:"Pick Up",batchRemarkLabel:"Batch Remark",escalate:"Escalate",escalateHint:"What did you try? Why escalating?",escalated:"Escalated",changePw:"Change Password",currentPw:"Current Password",newPw2:"New Password",pwChanged:"Password changed ✓",pwWrong:"Current password incorrect",outsource:"Outsource",outsourceTo:"Send to repair house",outsourceReason:"Reason for outsource",markReturned:"Mark Returned",returnedFix:"What was fixed?",repairHouses:"Repair Houses",addRH:"Add Repair House",contact:"Contact",address:"Address",outsourceTab:"Outsourced",daysOut:"days out",noOutsource:"No outsourced items",activity:"Activity Log",restore:"Restore",deleted:"Deleted",revertStatus:"Revert Status",noActivity:"No activity logged yet",bulkQC:"Bulk QC",bulkQCPass:"QC Pass All",bulkRedo:"Flag All Redo",bulkMode:"Mode",scanIMEIs:"Scan or paste IMEIs (one per line)",unitsFound:"units found",noMatch:"not found in QC pending",bulkProcessed:"Processed",remarkCodes:"Remark Codes",addCode:"Add Code",code:"Code",meaningEn:"Meaning (EN)",meaningCn:"Meaning (中文)",decoded:"Decoded",preCheck:"Pre-Check",glassService:"Glass Service",cameraService:"Camera Service",washing:"Washing",inspect:"Inspect & Fix",markWashDone:"Wash Done",allOK:"All OK After Wash",lensOK:"OK",lensFix:"Fix",selectBatch:"Select Batch",component:"Component",markServiced:"Mark Serviced",selectAll:"Select All",clearAll:"Clear",cannotFix:"Cannot Fix",directSell:"Direct Sell",whatTried:"What was tried?",confirmDS:"Confirm Direct Sell",noDS:"No direct sell items",housingService:"Housing Service",tvDashboard:"TV Dashboard",serviceProgress:"Service Progress",techPerf:"Tech Performance",totalJobs:"Total Jobs",completed:"Completed",services:"Services",totalUnits:"Total Units",allServiced:"All Serviced",pendingRedo:"Pending Redo",processing:"Processing",inWork:"In Work",ready:"Ready",qcReady2:"QC Ready",noShadow:"No Shadow",ssSmall:"SS - Small",msMid:"MS - Mid",dsDeep:"DS - Deep",shadowRemark:"Shadow remark...",glassIssue:"Glass Issue",glassIssueRemark:"Glass issue remark...",hsSvc:"HS Servicing",hsRemark:"HS remark...",techQcLabel:"Tech QC",techQcRemark:"Tech QC remark...",hsPartsLabel:"HS Parts",hsPartsRemark:"Parts remark...",flagUnfixable:"Flag Unfixable",unfixableReason:"Unfixable reason:",alreadyFlagged:"This unit is already flagged unfixable",qcDecide:"QC will decide on this unit.",confirmQC:"Confirm send to QC Pending?",feedbackTitle:"Feedback",feedbackBug:"Bug",feedbackSuggestion:"Suggestion",feedbackOther:"Other",feedbackHint:"Describe the issue or suggestion",feedbackSend:"Send Feedback",feedbackSent:"Feedback sent!",feedbackNone:"No feedback yet",feedbackResolve:"Resolve",feedbackReopen:"Reopen",feedbackResolved:"Resolved",days:"Days",status:"Status",confirm:"Confirm",
+tvDash:"TV Dashboard",daily:"Daily",weekly:"Weekly",monthly:"Monthly",
+svcProgress:"Service Progress",invSummary:"Inventory Summary",
+noTechs:"No technicians",
+totalJobs2:"Total Jobs",completed2:"Completed",activeJobs:"Active",
+processingUnits:"Processing Units",ready2:"Ready",
+qcReady3:"QC Ready",allBatchesLabel:"All Batches",
+statusLabel:"Status",
+commRates:"Commission Rates",commReport:"Commission Report",
+addRate:"Add Rate",stepName:"Step",rateRM:"Rate (RM)",
+noRatesSet:"No commission rates set. Click + to add.",
+quickSetup:"Quick Setup — Import from Sub-Jobs",
+quickSetupDesc:"Auto-create rates for all sub-job options (set to RM 0.00, edit after).",
+importSJOpts:"Import Sub-Job Options",
+deleteRate:"Delete this rate?",
+sectionPrompt:"Section (Housing/Glass/Camera/QC/Repair):",
+stepPrompt:"Step name:",ratePrompt:"Rate (RM):",
+totalLabel:"Total",
+chatTitle:"Chat / Announcements",typeMsg:"Type a message...",
+send:"Send",unitRefHint:"Unit ref / Code ID (optional)",
+pinned:"Pinned",pin:"Pin",unpin:"Unpin",reply:"Reply",
+reports:"Reports",period:"Period",
+thisWeek:"This Week",thisMonth:"This Month",lastMonth:"Last Month",
+custom:"Custom",generateReport:"Generate Report",
+totalProcessed:"Total Units Processed",qcPassRate:"QC Pass Rate",
+avgTurnaround:"Avg Turnaround",unitsOutsourced:"Units Outsourced",
+topPerformer:"Top Performer",highestPassRate:"Highest Pass Rate",
+partsCost:"Parts Cost",commTotal:"Commission Total",
+exportReport:"Export Report",
+washingTitle:"Washing — Send for Ultrasonic",
+wash:"Wash",skipInspect:"Skip to Inspect",markOK:"Mark OK",
+washed:"Washed",readyLabel:"Ready",
+noWaitInspect:"No units waiting for inspection",
+svcPartsReport:"Serviced — Parts Report",original:"Original",
+completeOtherSteps:"(complete other steps first)",
+clearFlag:"Clear",
+unfixableLabel:"Unfixable",
+partsInvTitle:"Parts Inventory",addPart:"Add Part",
+searchParts:"Search parts...",noParts:"No parts found",
+lowStock:"LOW",editPart:"Edit",deletePart:"Delete part?",
+category:"Category",showLow:"Show LOW",showingLow:"Showing LOW",listView:"List",modelView:"Model",
+usedLabel:"Used",outOfStock:"Out of stock!",housingBattParts:"Housing/Battery Parts",glassLcdParts:"Glass/LCD Parts",cameraParts:"Camera Parts",partsUsedLabel:"Parts Used",
+notifTitle:"Notifications",markAllRead:"Mark all read",
+noNotifs:"No notifications",
+confirmLabel:"Confirm",cancelLabel:"Cancel",
+toLabel:"to",
+dupLabel:"DUP",redoLabel:"REDO",
+noInvItems:"No inventory items",
+housingInstr:"Add a sub-job with Housing in name with step options",
+showAll:"Show all",
+commRatesShort:"Comm Rates",commReportShort:"Comm Report",
+chatLabel:"Chat",reportsLabel:"Reports",
+downloadTemplate:"Download Template (CSV)",
+noMsgsYet:"No messages yet",
+noCommData:"No commission data. Set rates first, then complete jobs.",
+redoRootCause:"Redo Root Cause Tracker",
+totalRedoJobs:"total redo jobs",
+byReason:"By Reason",byModel:"By Model",byTech:"By Tech (flagged against)",
+repeatUnits:"Repeat Units (2+ redos)",noRepeatRedos:"No repeat redos",
+glassDone:"Glass Done",lcdFault:"LCD Fault",
+redoFlaggedJobs:"Redo-Flagged Jobs",
+redoGlass:"Redo Glass",redoCam:"Redo Camera",redoHousing:"Redo Housing",
+confirmHousingStep:"Confirm Housing Step",
+thisAction:"This action will be logged with your name",
+submitAnyway:"Submit Anyway (Redo)",
+dupWarning:"Duplicate Warning",
+dupExplain:"Submitting again will create duplicate entries. Only proceed if this is a redo.",
+dupAlready:"These units already have",dupWorkDone:"work done:",
+prevAttempts:"Previous attempts",
+glassServiced:"Glass Serviced",lcdFaults:"LCD Faults",
+allDone:"All Done",
+reassign:"Reassign",
+sentBy:"Sent by",tried:"Tried",flaggedBy:"Flagged by",
+mostImproved:"Most Improved",
+exportExcel:"Export as Excel",
+selected:"selected",
+applyToAll:"Apply to all",
+password:"Password",
+buyersTitle:"Warehouses",ordersTitle:"Transfers",deliveriesTitle:"Returns",stockReport:"Stock Report",
+addBuyer:"Add Warehouse",editBuyer:"Edit Warehouse",buyerName:"Warehouse Name",terms:"Location",
+createOrder:"Create Transfer",orderNo:"Transfer No",buyer:"Warehouse",orderDate:"Send Date",deliveryDate:"Return Date",priority:"Priority",
+linkUnits:"Link Units",pricePerUnit:"Price/Unit",addToOrder:"Add to Order",
+markDelivered:"Mark Returned",deliveryHistory:"Return History",
+totalIn:"Total In",totalOut:"Total Out",inProcess:"In Process",available:"Available",
+byModelStock:"By Model",byBatchStock:"By Batch",exportExcelBtn:"Export Excel",
+normal:"Normal",rush:"Rush",urgent:"Urgent",
+pending:"Pending",inProgress:"In Progress",orderReady:"Ready",delivered:"Returned",
+noOrders:"No transfers yet",noBuyers:"No warehouses yet",progress:"Progress",
+unitsDone:"units done",deadline:"deadline",selectBuyer:"Select warehouse...",
+orderNotes:"Notes...",amount:"Amount"},
+cn:{login:"登录",signing:"登录中...",id:"管理员/技术员ID",pw:"密码",dashboard:"仪表板",qc:"质检",batch:"批次",inventory:"库存",search:"搜索",techs:"技术员",subjobs:"子工作",jobs:"工作",today:"今日",done:"完成",qcPending:"待质检",redo:"返工",active:"进行中",todayPerf:"今日表现",report:"报告",repair:"维修",service:"服务",myJobs:"我的工作",logJob:"记录",save:"保存",imei15:"IMEI(15位)",serialNum:"序列号",phoneModel:"手机型号",storage:"存储",color:"颜色",grade:"等级",batchId:"批次ID",jobType:"工作类型",subJobs:"子工作",remark:"备注",scanHint:"扫描或输入IMEI",eitherReq:"需要IMEI或序列号",redoJob:"返工",redoDetected:"自动检测—曾完成或标记返工",select:"选择...",qcVerify:"质检验证",qcDesc:"验证后标记通过或返工",allClear:"无待质检 ✅",qcPass:"通过",needsRedo:"需返工",redoReason:"返工原因",redoHint:"需要返工什么？",whichItem:"哪项需返工",awaitQC:"等待质检",flagRedo:"已标记返工",batchUpload:"批次上传",chooseFile:"选择文件",searchIMEI:"搜索IMEI/序列号/Code ID...",searchInv:"搜索...",bulkSearch:"批量搜索",noResults:"无结果",addTech:"添加技术员",addSubJob:"添加子工作",editSubJob:"编辑子工作",name:"名称",options:"选项",optionsHint:"逗号分隔",partial:"部分完成",edit:"编辑",selectBatch:"选择批次",serviceDesc:"配件(无需质检)",repairDesc:"扫描IMEI维修",downloadExcel:"下载Excel",qcPassRec:"质检通过",redoRec:"返工记录",svcRec:"服务记录",noJobs:"暂无",noJobsFound:"未找到",notStarted:"未开始",allBatches:"所有批次",allTechs:"全部",allStatus:"所有状态",notes:"备注...",qty:"数量",redoIssue:"返工问题",allRecords:"所有记录",techHistory:"维修历史",delConfirm:"删除？",locked:"锁定",unitDetail:"设备历史",bulkHint:"粘贴IMEI/序列号，每行一个",deleteConfirm:"删除此工作？",resetPw:"重置密码",newPassword:"新密码",condition:"设备状况",conditionHint:"外观检查：划痕、凹痕、裂纹...",todayJobs:"今日工作",notInInv:"❌ 不在库存中 — 无法进行维修",extraIssues:"发现额外问题",extraIssuesHint:"发现的其他故障...",waitingParts:"等待零件",partsDetailHint:"等待哪些零件？",daysWith:"天在技术员处",deleteJob:"删除",repeatJob:"重复上次工作",editJobTitle:"编辑工作",deviceInfo:"设备信息",qcByLabel:"质检员",notifications:"通知",markSeen:"标记已读",noNotif:"没有新通知",redoQueue:"返工队列",redoQueueDesc:"接手任何技术员的返工",noRedo:"没有待返工",pickUp:"接手",batchRemarkLabel:"批次备注",escalate:"升级处理",escalateHint:"你尝试了什么？为什么升级？",escalated:"已升级",changePw:"修改密码",currentPw:"当前密码",newPw2:"新密码",pwChanged:"密码已更改 ✓",pwWrong:"当前密码不正确",outsource:"外包",outsourceTo:"送至维修点",outsourceReason:"外包原因",markReturned:"标记已回",returnedFix:"修了什么？",repairHouses:"维修点",addRH:"添加维修点",contact:"联系方式",address:"地址",outsourceTab:"已外包",daysOut:"天在外",noOutsource:"没有外包项目",activity:"操作日志",restore:"恢复",deleted:"已删除",revertStatus:"恢复状态",noActivity:"暂无操作记录",bulkQC:"批量质检",bulkQCPass:"全部通过",bulkRedo:"全部返工",bulkMode:"模式",scanIMEIs:"扫描或粘贴IMEI（每行一个）",unitsFound:"个单位找到",noMatch:"不在待质检中",bulkProcessed:"已处理",remarkCodes:"备注代码",addCode:"添加代码",code:"代码",meaningEn:"含义(EN)",meaningCn:"含义(中文)",decoded:"解码",preCheck:"预检查",glassService:"玻璃服务",cameraService:"相机服务",washing:"清洗中",inspect:"检查修复",markWashDone:"清洗完成",allOK:"清洗后全部OK",lensOK:"OK",lensFix:"修",selectBatch:"选择批次",component:"部件",markServiced:"标记已服务",selectAll:"全选",clearAll:"清除",cannotFix:"无法修复",directSell:"直接销售",whatTried:"尝试了什么？",confirmDS:"确认直接销售",noDS:"没有直接销售项目",housingService:"外壳服务",tvDashboard:"电视仪表板",serviceProgress:"服务进度",techPerf:"技术员表现",totalJobs:"总工作",completed:"已完成",services:"服务",totalUnits:"总单位",allServiced:"全部完成",pendingRedo:"待返工",processing:"处理中",inWork:"进行中",ready:"就绪",qcReady2:"质检就绪",noShadow:"无阴影",ssSmall:"SS - 小",msMid:"MS - 中",dsDeep:"DS - 深",shadowRemark:"阴影备注...",glassIssue:"玻璃问题",glassIssueRemark:"玻璃问题备注...",hsSvc:"外壳服务项目",hsRemark:"外壳服务备注...",techQcLabel:"技术质检",techQcRemark:"技术质检备注...",hsPartsLabel:"外壳零件",hsPartsRemark:"零件备注...",flagUnfixable:"标记无法修复",unfixableReason:"无法修复原因：",alreadyFlagged:"此设备已标记为无法修复",qcDecide:"质检将决定此设备。",confirmQC:"确认发送到待质检？",feedbackTitle:"反馈",feedbackBug:"问题",feedbackSuggestion:"建议",feedbackOther:"其他",feedbackHint:"描述问题或建议",feedbackSend:"发送反馈",feedbackSent:"反馈已发送！",feedbackNone:"暂无反馈",feedbackResolve:"解决",feedbackReopen:"重新打开",feedbackResolved:"已解决",days:"天数",status:"状态",confirm:"确认",
+tvDash:"电视仪表板",daily:"每日",weekly:"每周",monthly:"每月",
+svcProgress:"服务进度",invSummary:"库存总览",
+noTechs:"暂无技术员",
+totalJobs2:"总工作",completed2:"已完成",activeJobs:"进行中",
+processingUnits:"处理中单位",ready2:"就绪",
+qcReady3:"质检就绪",allBatchesLabel:"所有批次",
+statusLabel:"状态",
+commRates:"佣金费率",commReport:"佣金报告",
+addRate:"添加费率",stepName:"步骤",rateRM:"费率 (RM)",
+noRatesSet:"未设置佣金费率。点击 + 添加。",
+quickSetup:"快速设置 — 从子工作导入",
+quickSetupDesc:"自动为所有子工作选项创建费率（设为 RM 0.00，之后编辑）。",
+importSJOpts:"导入子工作选项",
+deleteRate:"删除此费率？",
+sectionPrompt:"部分：",
+stepPrompt:"步骤名称：",ratePrompt:"费率 (RM)：",
+totalLabel:"总计",
+chatTitle:"聊天 / 公告",typeMsg:"输入消息...",
+send:"发送",unitRefHint:"单位参考 / Code ID（可选）",
+pinned:"已置顶",pin:"置顶",unpin:"取消置顶",reply:"回复",
+reports:"报告",period:"期间",
+thisWeek:"本周",thisMonth:"本月",lastMonth:"上月",
+custom:"自定义",generateReport:"生成报告",
+totalProcessed:"处理总单位",qcPassRate:"质检通过率",
+avgTurnaround:"平均周转",unitsOutsourced:"外包单位",
+topPerformer:"最佳表现",highestPassRate:"最高通过率",
+partsCost:"零件成本",commTotal:"佣金总计",
+exportReport:"导出报告",
+washingTitle:"清洗 — 超声波清洗",
+wash:"清洗",skipInspect:"跳过到检查",markOK:"标记OK",
+washed:"已清洗",readyLabel:"就绪",
+noWaitInspect:"无等待检查的单位",
+svcPartsReport:"已服务 — 零件报告",original:"原装",
+completeOtherSteps:"（先完成其他步骤）",
+clearFlag:"清除",
+unfixableLabel:"无法修复",
+partsInvTitle:"零件库存",addPart:"添加零件",
+searchParts:"搜索零件...",noParts:"未找到零件",
+lowStock:"低",editPart:"编辑",deletePart:"删除零件？",
+showLow:"显示低库存",showingLow:"显示低库存中",listView:"列表",modelView:"型号",
+usedLabel:"已用",outOfStock:"库存不足！",housingBattParts:"外壳/电池零件",glassLcdParts:"玻璃/LCD零件",cameraParts:"相机零件",partsUsedLabel:"已用零件",
+category:"类别",
+notifTitle:"通知",markAllRead:"全部标记已读",
+noNotifs:"暂无通知",
+confirmLabel:"确认",cancelLabel:"取消",
+toLabel:"至",
+dupLabel:"重复",redoLabel:"返工",
+noInvItems:"无库存项目",
+housingInstr:"添加名称含\"Housing\"的子工作并设置步骤选项",
+showAll:"显示全部",
+commRatesShort:"佣金费率",commReportShort:"佣金报告",
+chatLabel:"聊天",reportsLabel:"报告",
+downloadTemplate:"下载模板 (CSV)",
+noMsgsYet:"暂无消息",
+noCommData:"无佣金数据。请先设置费率，然后完成工作。",
+redoRootCause:"返工根因追踪",
+totalRedoJobs:"总返工工作",
+byReason:"按原因",byModel:"按型号",byTech:"按技术员（标记对象）",
+repeatUnits:"重复单位 (2+ 返工)",noRepeatRedos:"无重复返工",
+glassDone:"玻璃完成",lcdFault:"LCD故障",
+redoFlaggedJobs:"返工标记工作",
+redoGlass:"返工玻璃",redoCam:"返工相机",redoHousing:"返工外壳",
+confirmHousingStep:"确认外壳步骤",
+thisAction:"此操作将以您的名字记录",
+submitAnyway:"仍然提交（返工）",
+dupWarning:"重复警告",
+dupExplain:"再次提交将创建重复条目。仅在返工时继续。",
+dupAlready:"这些单位已有",dupWorkDone:"工作完成：",
+prevAttempts:"之前的尝试",
+glassServiced:"玻璃已服务",lcdFaults:"LCD故障",
+allDone:"全部完成",
+reassign:"重新分配",
+sentBy:"发送者",tried:"已尝试",flaggedBy:"标记者",
+mostImproved:"进步最大",
+exportExcel:"导出为Excel",
+selected:"已选择",
+applyToAll:"应用到所有",
+password:"密码",
+buyersTitle:"仓库",ordersTitle:"转移",deliveriesTitle:"退回",stockReport:"库存报告",
+addBuyer:"添加仓库",editBuyer:"编辑仓库",buyerName:"仓库名称",terms:"位置",
+createOrder:"创建转移",orderNo:"转移号",buyer:"仓库",orderDate:"发送日期",deliveryDate:"退回日期",priority:"优先级",
+linkUnits:"关联设备",pricePerUnit:"单价",addToOrder:"添加到订单",
+markDelivered:"标记已退回",deliveryHistory:"退回历史",
+totalIn:"总入库",totalOut:"总出库",inProcess:"处理中",available:"可用",
+byModelStock:"按型号",byBatchStock:"按批次",exportExcelBtn:"导出Excel",
+normal:"正常",rush:"加急",urgent:"紧急",
+pending:"待处理",inProgress:"进行中",orderReady:"就绪",delivered:"已退回",
+noOrders:"暂无转移",noBuyers:"暂无仓库",progress:"进度",
+unitsDone:"完成",deadline:"截止日期",selectBuyer:"选择仓库...",
+orderNotes:"备注...",amount:"金额"}};
+const JTN=["New"];const RR=["Screen issue","Battery drain","Charging problem","Camera fault","Speaker/Mic issue","Software bug","Cosmetic defect","Other"];const GR=["Grade A","Grade B","Grade C","Grade D","Original"];const STATUSES=["in-progress","qc-pending","completed","redo-flagged","outsourced","direct-sell"];
+const PM={"iPhone 16 Pro Max":{s:["256GB","512GB","1TB"],c:["Black Titanium","White Titanium","Natural Titanium","Desert Titanium"]},"iPhone 16 Pro":{s:["128GB","256GB","512GB","1TB"],c:["Black Titanium","White Titanium","Natural Titanium","Desert Titanium"]},"iPhone 16 Plus":{s:["128GB","256GB","512GB"],c:["Black","White","Pink","Teal","Ultramarine"]},"iPhone 16":{s:["128GB","256GB","512GB"],c:["Black","White","Pink","Teal","Ultramarine"]},"iPhone 15 Pro Max":{s:["256GB","512GB","1TB"],c:["Black Titanium","White Titanium","Natural Titanium","Blue Titanium"]},"iPhone 15 Pro":{s:["128GB","256GB","512GB","1TB"],c:["Black Titanium","White Titanium","Natural Titanium","Blue Titanium"]},"iPhone 15 Plus":{s:["128GB","256GB","512GB"],c:["Black","Blue","Green","Yellow","Pink"]},"iPhone 15":{s:["128GB","256GB","512GB"],c:["Black","Blue","Green","Yellow","Pink"]},"iPhone 14 Pro Max":{s:["128GB","256GB","512GB","1TB"],c:["Space Black","Silver","Gold","Deep Purple"]},"iPhone 14 Pro":{s:["128GB","256GB","512GB","1TB"],c:["Space Black","Silver","Gold","Deep Purple"]},"iPhone 14 Plus":{s:["128GB","256GB","512GB"],c:["Midnight","Starlight","Blue","Purple","Red"]},"iPhone 14":{s:["128GB","256GB","512GB"],c:["Midnight","Starlight","Blue","Purple","Red","Yellow"]},"iPhone 13 Pro Max":{s:["128GB","256GB","512GB","1TB"],c:["Graphite","Gold","Silver","Sierra Blue","Alpine Green"]},"iPhone 13 Pro":{s:["128GB","256GB","512GB","1TB"],c:["Graphite","Gold","Silver","Sierra Blue","Alpine Green"]},"iPhone 13":{s:["128GB","256GB","512GB"],c:["Midnight","Starlight","Blue","Pink","Red","Green"]},"iPhone 13 Mini":{s:["128GB","256GB","512GB"],c:["Midnight","Starlight","Blue","Pink","Red","Green"]},"iPhone 12 Pro Max":{s:["128GB","256GB","512GB"],c:["Graphite","Gold","Silver","Pacific Blue"]},"iPhone 12 Pro":{s:["128GB","256GB","512GB"],c:["Graphite","Gold","Silver","Pacific Blue"]},"iPhone 12":{s:["64GB","128GB","256GB"],c:["Black","White","Blue","Green","Red","Purple"]},"iPhone 12 Mini":{s:["64GB","128GB","256GB"],c:["Black","White","Blue","Green","Red","Purple"]},"iPhone 11 Pro Max":{s:["64GB","256GB","512GB"],c:["Space Gray","Silver","Gold","Midnight Green"]},"iPhone 11 Pro":{s:["64GB","256GB","512GB"],c:["Space Gray","Silver","Gold","Midnight Green"]},"iPhone 11":{s:["64GB","128GB","256GB"],c:["Black","White","Red","Yellow","Green","Purple"]},"iPhone SE (3rd Gen)":{s:["64GB","128GB","256GB"],c:["Midnight","Starlight","Red"]},"iPhone SE (2nd Gen)":{s:["64GB","128GB","256GB"],c:["Black","White","Red"]},"iPhone XS Max":{s:["64GB","256GB","512GB"],c:["Space Gray","Silver","Gold"]},"iPhone XS":{s:["64GB","256GB","512GB"],c:["Space Gray","Silver","Gold"]},"iPhone XR":{s:["64GB","128GB","256GB"],c:["Black","White","Blue","Yellow","Coral","Red"]},"iPhone X":{s:["64GB","256GB"],c:["Space Gray","Silver"]},"iPhone 8 Plus":{s:["64GB","128GB","256GB"],c:["Space Gray","Silver","Gold","Red"]},"iPhone 8":{s:["64GB","128GB","256GB"],c:["Space Gray","Silver","Gold","Red"]},"iPhone 7 Plus":{s:["32GB","128GB","256GB"],c:["Black","Silver","Gold","Rose Gold","Jet Black","Red"]},"iPhone 7":{s:["32GB","128GB","256GB"],c:["Black","Silver","Gold","Rose Gold","Jet Black","Red"]},"Other (Specify)":{s:[],c:[]}};
+const CM={"iPhone 16 Pro Max":["Wide 1.0x","Ultra 0.5x","Tele 5.0x","Front"],"iPhone 16 Pro":["Wide 1.0x","Ultra 0.5x","Tele 5.0x","Front"],"iPhone 16 Plus":["Wide 1.0x","Ultra 0.5x","Front"],"iPhone 16":["Wide 1.0x","Ultra 0.5x","Front"],"iPhone 15 Pro Max":["Wide 1.0x","Ultra 0.5x","Tele 5.0x","Front"],"iPhone 15 Pro":["Wide 1.0x","Ultra 0.5x","Tele 5.0x","Front"],"iPhone 15 Plus":["Wide 1.0x","Ultra 0.5x","Front"],"iPhone 15":["Wide 1.0x","Ultra 0.5x","Front"],"iPhone 14 Pro Max":["Wide 1.0x","Ultra 0.5x","Tele 3.0x","Front"],"iPhone 14 Pro":["Wide 1.0x","Ultra 0.5x","Tele 3.0x","Front"],"iPhone 14 Plus":["Wide 1.0x","Ultra 0.5x","Front"],"iPhone 14":["Wide 1.0x","Ultra 0.5x","Front"],"iPhone 13 Pro Max":["Wide 1.0x","Ultra 0.5x","Tele 3.0x","Front"],"iPhone 13 Pro":["Wide 1.0x","Ultra 0.5x","Tele 3.0x","Front"],"iPhone 13 Mini":["Wide 1.0x","Ultra 0.5x","Front"],"iPhone 13":["Wide 1.0x","Ultra 0.5x","Front"],"iPhone 12 Pro Max":["Wide 1.0x","Ultra 0.5x","Tele 2.5x","Front"],"iPhone 12 Pro":["Wide 1.0x","Ultra 0.5x","Tele 2.0x","Front"],"iPhone 12 Mini":["Wide 1.0x","Ultra 0.5x","Front"],"iPhone 12":["Wide 1.0x","Ultra 0.5x","Front"],"iPhone 11 Pro Max":["Wide 1.0x","Ultra 0.5x","Tele 2.0x","Front"],"iPhone 11 Pro":["Wide 1.0x","Ultra 0.5x","Tele 2.0x","Front"],"iPhone 11":["Wide 1.0x","Ultra 0.5x","Front"],"iPhone XS Max":["Wide 1.0x","Tele 2.0x","Front"],"iPhone XS":["Wide 1.0x","Tele 2.0x","Front"],"iPhone XR":["Wide 1.0x","Front"],"iPhone X":["Wide 1.0x","Tele 2.0x","Front"],"iPhone SE (3rd Gen)":["Wide 1.0x","Front"],"iPhone SE (2nd Gen)":["Wide 1.0x","Front"],"iPhone 8 Plus":["Wide 1.0x","Tele 2.0x","Front"],"iPhone 8":["Wide 1.0x","Front"],"iPhone 7 Plus":["Wide 1.0x","Tele 2.0x","Front"],"iPhone 7":["Wide 1.0x","Front"]};
+const CAM_FIX=["OK","Replace glass","Replace lens head","Replace lens (used)","Replace lens (new)","Still faulty"];
+function decodeRemark(rmk,codes){if(!rmk||!codes||!codes.length)return"";return rmk.split("+").map(p=>{const clean=p.replace(/\(.*\)/g,"").trim();const found=codes.find(c=>c.code.toUpperCase()===clean.toUpperCase());const paren=p.match(/\(([^)]+)\)/);const parenDecoded=paren?codes.find(c=>c.code.toUpperCase()===paren[1].toUpperCase()):null;return(found?found.meaning_en:clean)+(parenDecoded?` (${parenDecoded.meaning_en})`:paren?` (${paren[1]})`:"");}).join(", ");}
+const COMP_COLORS={na:"rgba(100,116,139,0.3)",ok:"rgba(16,185,129,0.8)",service:"rgba(245,158,11,0.8)",serviced:"rgba(201,168,76,0.8)",washing:"rgba(139,92,246,0.8)"};
+const COMP_LABELS={na:"⬜",ok:"🟢 OK",service:"🟡 SVC",serviced:"🔵 Done",washing:"🟣 Wash"};
+const Ic={logo:<svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="8" fill="#C9A84C"/><path d="M10 8h12a2 2 0 012 2v12a2 2 0 01-2 2H10a2 2 0 01-2-2V10a2 2 0 012-2z" stroke="#fff" strokeWidth="1.5" fill="none"/><circle cx="16" cy="15" r="3" stroke="#fff" strokeWidth="1.5" fill="none"/></svg>,out:<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>,plus:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>,chk:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M20 6L9 17l-5-5"/></svg>,del:<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>,edt:<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,mail:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 7l-10 7L2 7"/></svg>,usr:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>,wrn:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>,bar:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>,clk:<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>,cam:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>,x:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>,star:<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>,rdo:<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 102.13-9.36L1 10"/></svg>,srch:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>,mb:<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M10 8h.01M8 12h8"/></svg>,tri:<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/></svg>,inv:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>,up:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>,zap:<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>,info:<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>,dl:<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>,svc:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 6v6"/></svg>,rep:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>,qc:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>,ph:<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="5" y="2" width="14" height="20" rx="2"/></svg>,eye:<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>,key:<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.78 7.78 5.5 5.5 0 017.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>};
+const TD={bg:"#0C0C0C",card:"#161616",border:"#2A2A2A",accent:"#C9A84C",success:"#4CAF6A",warning:"#E8A840",danger:"#D45050",text:"#F5F0E8",muted:"#A09882",dim:"#6B6355",inputBg:"#1A1A1A",purple:"#8B5CF6",amber:"#D97706",qcO:"#E8A840"};
+const TL={bg:"#FAF8F3",card:"#FFFFFF",border:"#E5DFD0",accent:"#B8930F",success:"#3D9E5A",warning:"#D49A30",danger:"#C94444",text:"#1A1508",muted:"#7A7060",dim:"#A09882",inputBg:"#F8F5EE",purple:"#8B5CF6",amber:"#D97706",qcO:"#D49A30"};
+let T=TD;let bI,lI,eI,bB,pB,dB,gB;
+function applyTheme(mode){T=mode==="light"?TL:TD;const cs=mode==="light"?"light":"dark";bI={width:"100%",padding:"10px 14px",background:T.inputBg,border:`1px solid ${T.border}`,borderRadius:"7px",color:T.text,fontSize:"14px",outline:"none",boxSizing:"border-box",colorScheme:cs};lI={...bI,background:mode==="light"?"rgba(226,232,240,0.5)":"rgba(30,41,59,0.5)",color:T.dim,cursor:"not-allowed",opacity:0.7};eI={...bI,border:`1px solid ${T.danger}`};bB={padding:"9px 16px",borderRadius:"7px",border:"none",cursor:"pointer",fontWeight:"600",fontSize:"14px",display:"inline-flex",alignItems:"center",gap:"5px",transition:"all 0.2s"};pB={...bB,background:T.accent,color:"#fff"};dB={...bB,background:T.danger,color:"#fff",padding:"6px 12px"};gB={...bB,background:"transparent",color:T.muted,border:`1px solid ${T.border}`,padding:"6px 12px"};}
+applyTheme("dark");
+const mCSS=`@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}body{margin:0;overflow-x:hidden}input,select,button,textarea{font-family:'Outfit',sans-serif}select{appearance:auto}.fxHGear{display:none}.fxHSet{display:contents}.fxPT{display:none}.fxTbMore{display:none}.fxTbDesktopMore{display:contents}@media(max-width:768px){
+body{font-size:14px}
+.fxTbDesktopMore{display:none!important}
+.fxH{padding:8px 12px!important}
+.fxH .kisBr{font-size:15px!important}
+.fxH .fxUI{display:none!important}
+.fxH .fxHSizeWrap,.fxH .fxHTheme,.fxH .fxHLang,.fxH .fxHTv,.fxH .fxHChPw{display:none!important}
+.fxHGear{display:flex!important;align-items:center;justify-content:center;min-height:44px;min-width:44px}
+.fxHSet{display:none!important}
+.fxHSet.fxHSetOpen{display:flex!important;flex-direction:row;flex-wrap:wrap;gap:6px;position:absolute;top:100%;right:0;background:var(--fx-card);border:1px solid var(--fx-border);border-radius:10px;padding:10px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,0.3);min-width:200px;align-items:center;justify-content:center}
+.fxTb{padding:6px 8px!important;gap:3px!important;flex-wrap:wrap!important;overflow-x:visible!important}
+.fxTbPrimary{display:grid!important;grid-template-columns:repeat(4,1fr);gap:3px;width:100%}
+.fxTbPrimary button{padding:6px 4px!important;font-size:10px!important;min-height:44px;white-space:nowrap;justify-content:center;overflow:hidden;text-overflow:ellipsis;flex-direction:column;gap:1px!important}
+.fxTbPrimary button span{font-size:9px!important}
+.fxTbMore{display:block!important;width:100%}
+.fxTbMore summary{padding:6px 10px;font-size:11px;color:inherit;cursor:pointer;text-align:center;min-height:44px;display:flex;align-items:center;justify-content:center;border-radius:6px;border:1px solid;font-weight:600}
+.fxTbMore .fxTbMoreGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;padding-top:6px}
+.fxTbMore .fxTbMoreGrid button{padding:6px 4px!important;font-size:10px!important;min-height:44px;justify-content:center;flex-direction:column;gap:1px!important}
+.fxTbMore .fxTbMoreGrid button span{font-size:9px!important}
+.fxM{padding:10px!important}
+.fxSG{display:grid!important;grid-template-columns:1fr 1fr!important;gap:6px!important;flex-wrap:nowrap!important}
+.fxSG>div{min-width:0!important;padding:8px!important}
+.fxSG .fxSV{font-size:16px!important}
+.fxS{gap:6px!important}
+.fxS>div{min-width:0!important;padding:10px!important}
+.fxS .fxSV{font-size:18px!important}
+.fxMI{padding:10px!important;max-width:100%!important;max-height:100vh!important;border-radius:0!important;margin:0!important;width:100%!important;height:100vh!important}
+.fxG2{grid-template-columns:1fr!important}
+.fxPR{display:none!important}
+.fxPT{display:block!important}
+.fxPT table{width:100%;border-collapse:collapse}
+.fxPT th{text-align:left;padding:6px 4px;font-size:10px;font-weight:700;text-transform:uppercase;white-space:nowrap}
+.fxPT td{padding:8px 4px;font-size:12px;white-space:nowrap}
+.fxPT tr{min-height:44px}
+.fxPN{width:100%;justify-content:space-between!important}
+.fxBTxt{display:none!important}
+.fxJA{flex-direction:row!important;gap:4px!important;width:auto!important}
+.fxJA button{padding:8px 10px!important;min-width:40px;min-height:44px;width:auto!important;justify-content:center}
+.fxTSG{display:grid!important;grid-template-columns:1fr 1fr!important;gap:6px!important}
+.fxTTb{display:grid!important;grid-template-columns:repeat(4,1fr)!important;gap:4px!important}
+.fxTTb button{font-size:10px!important;padding:8px 4px!important;min-height:44px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fxIMEI{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px!important}
+.fxFB{flex-direction:column;align-items:stretch!important}
+.fxFB>*{width:100%!important}
+input,textarea{font-size:16px!important;padding:10px 8px!important;min-height:44px}
+select{font-size:14px!important;padding:8px 6px!important;min-height:44px}
+button{min-height:40px}
+input[type="checkbox"]{width:20px!important;height:20px!important;min-height:auto!important}
+input[type="date"]{min-height:40px!important;font-size:14px!important}
+label{padding:6px 10px!important;font-size:13px!important;min-height:40px;display:flex;align-items:center}
+span[style*="borderRadius"]{padding:4px 8px!important;font-size:11px!important}
+table{font-size:12px!important}
+table th{padding:8px 4px!important;font-size:10px!important}
+table td{padding:8px 4px!important;font-size:12px!important}
+details summary{font-size:13px!important;padding:4px 0}
+}`;
+// ── Shared UI ──
+function Scanner({onScan,onClose}){const vR=useRef(null),sR=useRef(null),iR=useRef(null);const[camOk,setCamOk]=useState(false);const[me,setMe]=useState("");const[scanType,setScanType]=useState("imei");useEffect(()=>{let c=false;const go=async()=>{try{const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});if(c){s.getTracks().forEach(t=>t.stop());return;}sR.current=s;if(vR.current){vR.current.srcObject=s;vR.current.setAttribute("playsinline","true");await vR.current.play();setCamOk(true);}if("BarcodeDetector"in window){const d=new window.BarcodeDetector({formats:["code_128","code_39","ean_13","ean_8","qr_code","itf","codabar"]});iR.current=setInterval(async()=>{if(!vR.current||vR.current.readyState<2)return;try{const b=await d.detect(vR.current);if(b.length>0){const raw=b[0].rawValue.trim();const digits=raw.replace(/\D/g,"");if(digits.length===15){onScan({type:"imei",value:digits});sp();onClose();}else if(raw.length>=2){onScan({type:"serial",value:raw});sp();onClose();}}}catch{}},400);}}catch(e){console.log("cam:",e);}};const sp=()=>{if(iR.current)clearInterval(iR.current);if(sR.current)sR.current.getTracks().forEach(t=>t.stop());};go();return()=>{c=true;sp();};},[]);const sp=()=>{if(iR.current)clearInterval(iR.current);if(sR.current)sR.current.getTracks().forEach(t=>t.stop());};const sub=()=>{const v=me.trim();if(scanType==="imei"){const d=v.replace(/\D/g,"");if(d.length===15){onScan({type:"imei",value:d});sp();onClose();}}else{if(v.length>=2){onScan({type:"serial",value:v});sp();onClose();}}};
+  return (<div style={{position:"fixed",inset:0,zIndex:2000,background:"rgba(0,0,0,0.95)",display:"flex",alignItems:"center",justifyContent:"center",padding:14}}><div style={{width:"100%",maxWidth:440,background:T.card,borderRadius:16,border:"1px solid "+T.border,overflow:"hidden"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 16px",borderBottom:"1px solid "+T.border}}><span style={{color:T.text,fontWeight:700,fontSize:14}}>Scan IMEI / Serial</span><button onClick={()=>{sp();onClose();}} style={{background:"rgba(255,255,255,0.08)",border:"none",borderRadius:8,width:30,height:30,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",color:T.muted}}>{Ic.x}</button></div><div style={{background:"#000",aspectRatio:"16/9",position:"relative"}}><video ref={vR} style={{width:"100%",height:"100%",objectFit:"cover"}} playsInline muted autoPlay webkit-playsinline="true"/>{!camOk&&<div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",color:T.dim,fontSize:13,textAlign:"center",padding:16}}>Camera loading or denied - type below</div>}</div><div style={{padding:"14px 16px"}}><div style={{display:"flex",gap:4,marginBottom:8}}><button onClick={()=>{setScanType("imei");setMe("");}} style={{padding:"5px 12px",fontSize:12,fontWeight:scanType==="imei"?700:400,background:scanType==="imei"?T.accent:"transparent",color:scanType==="imei"?"#fff":T.dim,border:"1px solid "+(scanType==="imei"?T.accent:T.border),borderRadius:5,cursor:"pointer"}}>IMEI</button><button onClick={()=>{setScanType("serial");setMe("");}} style={{padding:"5px 12px",fontSize:12,fontWeight:scanType==="serial"?700:400,background:scanType==="serial"?T.purple:"transparent",color:scanType==="serial"?"#fff":T.dim,border:"1px solid "+(scanType==="serial"?T.purple:T.border),borderRadius:5,cursor:"pointer"}}>Serial</button></div><div style={{fontSize:12,color:T.dim,marginBottom:5}}>{scanType==="imei"?"Type or scan 15-digit IMEI:":"Type or scan Serial Number:"}</div><div style={{display:"flex",gap:6}}><input style={{...bI,flex:1,fontSize:18,fontFamily:"'JetBrains Mono',monospace",letterSpacing:"1px"}} placeholder={scanType==="imei"?"000000000000000":"Serial number"} value={me} onChange={e=>setMe(scanType==="imei"?e.target.value.replace(/\D/g,"").slice(0,15):e.target.value.slice(0,30))} onKeyDown={e=>e.key==="Enter"&&sub()} autoFocus inputMode={scanType==="imei"?"numeric":"text"}/><button onClick={sub} style={{...pB,padding:"10px 16px",opacity:(scanType==="imei"?me.length===15:me.length>=2)?1:0.4,fontSize:16}}>{Ic.chk}</button></div>{scanType==="imei"&&me&&<div style={{fontSize:12,marginTop:3,color:me.length===15?T.success:T.dim}}>{me.length}/15{me.length===15?" \u2713":""}</div>}<div style={{fontSize:11,color:T.dim,marginTop:6}}>Camera auto-detects: 15 digits = IMEI, otherwise = Serial</div></div></div></div>);
 }
-
-// ── Helpers ──
-const td=()=>{const d=new Date();return d.toLocaleDateString("en-US",{weekday:"long",year:"numeric",month:"long",day:"numeric"});};
-
-// ── Modal ──
-function Mod({title,onClose,children,w="500px",T}){return <div style={{position:"fixed",inset:0,zIndex:999,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={onClose}><div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",backdropFilter:"blur(4px)"}}/><div style={{position:"relative",background:T.card,borderRadius:16,padding:24,maxWidth:w,width:"95%",maxHeight:"90vh",overflow:"auto",border:`1px solid ${T.border}`,boxShadow:`0 24px 48px ${T.shadow}`}} onClick={e=>e.stopPropagation()}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}><h3 style={{margin:0,fontSize:16,fontWeight:700,color:T.text}}>{title}</h3><button onClick={onClose} style={{background:"none",border:"none",fontSize:20,cursor:"pointer",color:T.dim,transition:"color 0.2s"}} onMouseEnter={e=>e.target.style.color=T.accent} onMouseLeave={e=>e.target.style.color=T.dim}>✕</button></div>{children}</div></div>;}
-function Fld({label,children}){return <div style={{marginBottom:14}}><label style={{display:"block",fontSize:11,fontWeight:600,color:"var(--muted)",marginBottom:5,textTransform:"uppercase",letterSpacing:"0.5px"}}>{label}</label>{children}</div>;}
-
-export default function App(){
-  const db=useDB();
-  const[theme,setTheme]=useState(()=>localStorage.getItem("kis-theme")||"dark");
-  const[lang,setLang]=useState(()=>localStorage.getItem("kis-lang")||"en");
-  const[user,setUser]=useState(null);
-  const[loginName,setLoginName]=useState("");
-  const[loginPass,setLoginPass]=useState("");
-  const[tab,setTab]=useState("dashboard");
-  const[sz,setSz]=useState("M");
-  const[hover,setHover]=useState(null);
-
-  const T=theme==="dark"?DARK:LIGHT;
-  const LL=LANG[lang];
-
-  useEffect(()=>{localStorage.setItem("kis-theme",theme);},[theme]);
-  useEffect(()=>{localStorage.setItem("kis-lang",lang);},[lang]);
-
-  // ── Styles ──
-  const bI={background:T.inputBg,border:`1px solid ${T.border}`,borderRadius:8,padding:"10px 14px",color:T.text,fontSize:13,width:"100%",outline:"none",transition:"border-color 0.2s",boxSizing:"border-box"};
-  const pB={display:"inline-flex",alignItems:"center",gap:6,padding:"10px 20px",borderRadius:8,border:"none",cursor:"pointer",fontWeight:700,fontSize:13,background:`linear-gradient(135deg, ${T.accentDark}, ${T.accent}, ${T.accentLight})`,color:"#111",letterSpacing:"0.3px",transition:"all 0.2s",boxShadow:`0 2px 8px ${T.glow}`};
-  const gB={display:"inline-flex",alignItems:"center",gap:4,padding:"7px 14px",borderRadius:8,border:`1px solid ${T.border}`,cursor:"pointer",fontWeight:600,fontSize:12,background:"transparent",color:T.text,transition:"all 0.2s"};
-  const dB={...gB,borderColor:T.danger,color:T.danger};
-  const fs=sz==="S"?12:sz==="L"?16:14;
-
-  // ── Login ──
-  const handleLogin=async()=>{
-    const u=db.users.find(x=>x.name?.toLowerCase()===loginName.toLowerCase()&&x.password===loginPass);
-    if(u){setUser(u);setLoginName("");setLoginPass("");}
-    else alert("Invalid credentials");
+function EM({m}){return m?(<div style={{display:"flex",alignItems:"center",gap:4,color:T.danger,fontSize:12,marginTop:2}}>{Ic.tri} {m}</div>):null;}
+function NB({c,bg,bd,ic,children}){return children?(<div style={{display:"flex",alignItems:"flex-start",gap:6,padding:"10px 12px",background:bg,borderRadius:6,border:bd,marginBottom:10,color:c,fontSize:13,lineHeight:1.5,whiteSpace:"pre-wrap"}}><span style={{flexShrink:0,marginTop:1}}>{ic}</span><span>{children}</span></div>):null;}
+function Mod({title,onClose,children,w="480px"}){return (<div style={{position:"fixed",inset:0,zIndex:1000,background:"rgba(0,0,0,0.6)",backdropFilter:"blur(3px)",display:"flex",alignItems:"center",justifyContent:"center",padding:10}} onClick={onClose}><div className="fxMI" onClick={e=>e.stopPropagation()} style={{background:T.card,borderRadius:14,border:`1px solid ${T.border}`,width:"100%",maxWidth:w,maxHeight:"92vh",overflow:"auto"}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"13px 16px",borderBottom:`1px solid ${T.border}`,position:"sticky",top:0,background:T.card,zIndex:10,borderRadius:"14px 14px 0 0"}}><h3 style={{margin:0,color:T.text,fontSize:14,fontWeight:700}}>{title}</h3><button onClick={onClose} style={{...gB,padding:"2px 7px",fontSize:16}}>×</button></div><div style={{padding:16}}>{children}</div></div></div>);}
+function Fld({label,children,hint}){return (<div style={{marginBottom:12}}><label style={{display:"block",color:T.muted,fontSize:12,fontWeight:600,marginBottom:3,textTransform:"uppercase",letterSpacing:"0.3px"}}>{label}</label>{children}{hint&&<p style={{color:T.dim,fontSize:11,margin:"2px 0 0"}}>{hint}</p>}</div>);}
+function SC({icon,label,value,color,onClick}){return (<div onClick={onClick} style={{background:T.card,borderRadius:11,padding:12,border:`1px solid ${T.border}`,flex:1,minWidth:0,cursor:onClick?"pointer":"default"}}><div style={{display:"flex",alignItems:"center",gap:5,marginBottom:3}}><div style={{width:22,height:22,borderRadius:5,background:`${color}18`,display:"flex",alignItems:"center",justifyContent:"center",color,flexShrink:0}}>{icon}</div><span style={{color:T.dim,fontSize:10,fontWeight:600,textTransform:"uppercase"}}>{label}</span></div><div className="fxSV" style={{fontSize:22,fontWeight:800,color:T.text}}>{value}</div></div>);}
+function Hdr({user,onLogout,lang,setLang,themeMode,setTheme,fxSize,setSize,onChangePw,onRefresh,onTV,onFeedback,onNotif,notifCount}){const LL=LANG[lang];const[showSettings,setShowSettings]=useState(false);return (<header className="fxH" style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 18px",background:T.card,borderBottom:`1px solid ${T.border}`,position:"sticky",top:0,zIndex:100,["--fx-card"]:T.card,["--fx-border"]:T.border}}>
+<div style={{display:"flex",alignItems:"center",gap:8}}>{Ic.logo}<span className="kisBr" style={{fontSize:18,fontWeight:700,color:T.text}}>KIS<span style={{color:T.accent}}> Repair</span></span><span style={{fontSize:9,color:T.dim}}>v1.0.0</span></div>
+<div style={{display:"flex",alignItems:"center",gap:5,position:"relative"}}>
+<div className="fxUI" style={{color:T.text,fontSize:12,fontWeight:600}}>{user.name}</div>
+<div style={{width:26,height:26,borderRadius:5,background:`linear-gradient(135deg,${T.accent},#6366F1)`,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:700,fontSize:11}}>{user.name.split(" ").map(w=>w.charAt(0).toUpperCase()).join("").slice(0,2)}</div>
+{onNotif&&<button onClick={onNotif} style={{...gB,padding:"4px 6px",minHeight:44,position:"relative"}} title="Notifications">🔔{notifCount>0&&<span style={{position:"absolute",top:-2,right:-2,minWidth:16,height:16,borderRadius:"50%",background:T.danger,color:"#fff",fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",padding:"0 3px"}}>{notifCount}</span>}</button>}
+<button onClick={onFeedback} style={{...gB,padding:"4px 6px",color:T.accent,minHeight:44}} title="Feedback">💬</button>
+<button className="fxHGear" onClick={()=>setShowSettings(!showSettings)} style={{...gB,padding:"4px 10px",fontSize:18,minHeight:44,minWidth:44}} title="Settings">⚙️</button>
+<div className={`fxHSet${showSettings?" fxHSetOpen":""}`} style={{background:T.card,border:`1px solid ${T.border}`}}>
+<div style={{display:"flex",borderRadius:4,overflow:"hidden",border:`1px solid ${T.border}`}}>{["S","M","L"].map((s,i)=>{const v=[0.9,1,1.15][i];const a=fxSize===v;return <button key={s} onClick={()=>setSize(v)} style={{padding:"6px 12px",fontSize:12,fontWeight:a?700:400,background:a?T.accent:"transparent",color:a?"#fff":T.dim,border:"none",cursor:"pointer",minHeight:44}}>{s}</button>;})}</div>
+<button onClick={()=>setTheme(themeMode==="dark"?"light":"dark")} style={{background:"transparent",border:`1px solid ${T.border}`,borderRadius:4,padding:"6px 12px",cursor:"pointer",fontSize:16,display:"flex",alignItems:"center",minHeight:44}}>{themeMode==="dark"?"☀️":"🌙"}</button>
+<select value={lang} onChange={e=>setLang(e.target.value)} style={{background:T.inputBg,border:`1px solid ${T.border}`,borderRadius:4,color:T.text,fontSize:14,padding:"6px 8px",minHeight:44}}><option value="en">EN</option><option value="cn">中文</option></select>
+{onTV&&<button onClick={onTV} style={{background:"transparent",border:`1px solid ${T.border}`,borderRadius:4,padding:"6px 12px",cursor:"pointer",fontSize:12,display:"flex",alignItems:"center",gap:3,color:T.purple,minHeight:44}}>📺 TV</button>}
+<button onClick={onChangePw} style={{...gB,padding:"6px 12px",minHeight:44}} title="Change Password">{Ic.key} {LL.password}</button>
+</div>
+<button onClick={onLogout} style={{...gB,padding:"4px 6px",minHeight:44}}>{Ic.out}</button>
+</div></header>);}
+const SBC={completed:{bg:"rgba(16,185,129,0.12)",c:T.success},"in-progress":{bg:"rgba(245,158,11,0.12)",c:T.warning},"qc-pending":{bg:"rgba(249,115,22,0.12)",c:T.qcO},"redo-flagged":{bg:"rgba(239,68,68,0.15)",c:T.danger},outsourced:{bg:"rgba(249,115,22,0.15)",c:T.amber},"direct-sell":{bg:"rgba(239,68,68,0.18)",c:T.danger}};
+const SBL={en:{completed:"Done","qc-passed":"QC Passed","in-progress":"Active","qc-pending":"QC Pending","redo-flagged":"Needs Redo",outsourced:"Outsourced","direct-sell":"Direct Sell"},cn:{completed:"完成","qc-passed":"已通过","in-progress":"进行中","qc-pending":"待质检","redo-flagged":"需返工",outsourced:"已外包","direct-sell":"直接销售"}};
+function SB({s,lang,qcBy,jobType}){const x=SBC[s]||SBC["in-progress"];const label=s==="qc-pending"&&jobType==="Redo"?(lang==="cn"?"返工质检":"Redo QC"):(SBL[lang]||SBL.en)[s]||s;return (<span style={{padding:"2px 5px",borderRadius:3,fontSize:10,fontWeight:600,background:x.bg,color:x.c,whiteSpace:"nowrap"}}>{label}</span>);}
+function TB({t}){const c=t==="New"?T.success:t==="Redo"?T.danger:T.purple;return (<span style={{padding:"2px 5px",borderRadius:3,fontSize:10,fontWeight:700,background:`${c}18`,color:c}}>{t}</span>);}
+function SJBadges({sjs,lang,allSJ}){return (<div style={{display:"flex",gap:2,flexWrap:"wrap",marginBottom:2}}>{(sjs||[]).map((sj,i)=>{const n=typeof sj==="object"?(allSJ?sjN(allSJ.find(x=>x.name===sj.name)||sj,lang):sj.name):sj;const o=typeof sj==="object"&&sj.option?sj.option:"";return (<span key={i} style={{padding:"1px 4px",borderRadius:2,fontSize:9,background:"rgba(201,168,76,0.1)",color:T.accent}}>{n}{o&&<span style={{color:T.purple,fontWeight:600}}>: {o}</span>}</span>);})}</div>);}
+// Status filter dropdown
+function StatusFilter({value,onChange,lang}){const LL=LANG[lang];return (<select value={value} onChange={e=>onChange(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px"}}><option value="all">{LL.allStatus}</option>{STATUSES.map(s=><option key={s} value={s}>{(SBL[lang]||SBL.en)[s]||s}</option>)}</select>);}
+function SJS({subJobs,sel,onChange,lang}){const tog=n=>{const e=sel.find(s=>s.name===n);if(e)onChange(sel.filter(s=>s.name!==n));else onChange([...sel,{name:n,option:""}]);};const togO=(n,o)=>{onChange(sel.map(s=>{if(s.name!==n)return s;const cur=(s.option||"").split(",").map(x=>x.trim()).filter(Boolean);const has=cur.includes(o);const next=has?cur.filter(x=>x!==o):[...cur,o];return{...s,option:next.join(", ")};}));};return (<div style={{display:"grid",gap:5}}>{subJobs.map(sj=>{const s=sel.find(x=>x.name===sj.name);const a=!!s;const selOpts=(s?.option||"").split(",").map(x=>x.trim()).filter(Boolean);return (<div key={sj.name}><button onClick={()=>tog(sj.name)} style={{width:"100%",padding:"8px 10px",borderRadius:a&&sj.options.length>0?"6px 6px 0 0":"6px",fontSize:13,fontWeight:500,cursor:"pointer",textAlign:"left",background:a?"rgba(201,168,76,0.12)":T.inputBg,border:`1.5px solid ${a?T.accent:T.border}`,color:a?T.accent:T.muted,borderBottom:a&&sj.options.length>0?"none":undefined}}><span style={{display:"inline-flex",alignItems:"center",gap:5}}><span style={{width:14,height:14,borderRadius:3,display:"inline-flex",alignItems:"center",justifyContent:"center",flexShrink:0,background:a?T.accent:"transparent",border:a?"none":`1.5px solid ${T.border}`}}>{a&&<svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round"><path d="M20 6L9 17l-5-5"/></svg>}</span>{sjN(sj,lang)}</span></button>{a&&sj.options.length>0&&<div style={{padding:"6px 10px",background:"rgba(201,168,76,0.05)",border:`1.5px solid ${T.accent}`,borderTop:"none",borderRadius:"0 0 6px 6px",display:"flex",gap:6,flexWrap:"wrap"}}>{sj.options.map(o=>{const checked=selOpts.includes(o);return(<label key={o} style={{display:"flex",alignItems:"center",gap:4,cursor:"pointer",padding:"3px 6px",borderRadius:4,background:checked?"rgba(201,168,76,0.15)":"transparent",border:`1px solid ${checked?T.accent:T.border}`}}><input type="checkbox" checked={checked} onChange={()=>togO(sj.name,o)} style={{width:13,height:13,accentColor:T.accent}}/><span style={{fontSize:12,color:checked?T.accent:T.muted}}>{o}</span></label>);})}</div>}</div>);})}</div>);}
+function JTS({isRedo,value,onChange,lang}){const LL=LANG[lang];const cfg={New:{c:T.success,i:Ic.star},Redo:{c:T.danger,i:Ic.rdo}};const types=isRedo?["Redo","New"]:["New"];return (<>{isRedo&&<div style={{padding:8,borderRadius:7,background:"rgba(239,68,68,0.1)",border:"1.5px solid rgba(239,68,68,0.3)",marginBottom:7,textAlign:"center"}}><div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4}}>{Ic.rdo}<span style={{fontWeight:700,fontSize:13,color:T.danger}}>{LL.redoDetected}</span></div></div>}<div className="fxG2" style={{display:"grid",gridTemplateColumns:isRedo?"1fr 1fr":"1fr",gap:7}}>{types.map(jt=>{const x=cfg[jt];const a=value===jt;return (<button key={jt} onClick={()=>onChange(jt)} style={{padding:"11px 5px",borderRadius:9,cursor:"pointer",background:a?`${x.c}18`:T.inputBg,border:`2px solid ${a?x.c:T.border}`,display:"flex",flexDirection:"column",alignItems:"center",gap:3}}><div style={{width:28,height:28,borderRadius:6,background:a?`${x.c}25`:"rgba(255,255,255,0.04)",display:"flex",alignItems:"center",justifyContent:"center",color:a?x.c:T.dim}}>{x.i}</div><span style={{fontWeight:700,fontSize:13,color:a?x.c:T.muted}}>{jt}</span></button>);})}</div></>);}
+function Login({onLogin,lang,setLang,themeMode,setTheme}){const LL=LANG[lang];const[id,setId]=useState("");const[pw,setPw]=useState("");const[err,setErr]=useState("");const[ld,setLd]=useState(false);const go=()=>{setLd(true);setErr("");setTimeout(()=>{setLd(false);const r=onLogin(id.trim(),pw);if(!r.ok)setErr(lang==="cn"?"账号或密码错误":"Invalid credentials.");},400);};
+  return (<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:themeMode==="dark"?`linear-gradient(135deg,${T.bg},#0F172A,#1a1a2e)`:`linear-gradient(135deg,${T.bg},#E2E8F0,#CBD5E1)`,fontFamily:"'Outfit',sans-serif",padding:14}}><style>{mCSS}</style><div style={{width:"100%",maxWidth:360,padding:"34px 26px",background:T.card,borderRadius:16,border:`1px solid ${T.border}`}}><div style={{display:"flex",justifyContent:"flex-end",marginBottom:5,gap:5}}><button onClick={()=>setTheme(themeMode==="dark"?"light":"dark")} style={{background:"transparent",border:`1px solid ${T.border}`,borderRadius:4,padding:"3px 6px",cursor:"pointer",fontSize:14}}>{themeMode==="dark"?"☀️":"🌙"}</button><select value={lang} onChange={e=>setLang(e.target.value)} style={{background:T.inputBg,border:`1px solid ${T.border}`,borderRadius:4,color:T.text,fontSize:12,padding:"3px 6px"}}><option value="en">EN</option><option value="cn">中文</option></select></div><div style={{textAlign:"center",marginBottom:22}}><div style={{display:"inline-flex",alignItems:"center",gap:7}}>{Ic.logo}<span style={{fontSize:22,fontWeight:800,color:T.text}}>KIS<span style={{color:T.accent}}> Repair</span></span></div></div>{err&&<div style={{padding:7,background:"rgba(239,68,68,0.1)",borderRadius:6,color:T.danger,fontSize:13,marginBottom:10,textAlign:"center"}}>{err}</div>}<Fld label={LL.id}><input style={bI} placeholder="ID" value={id} onChange={e=>setId(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()}/></Fld><Fld label={LL.pw}><input style={bI} type="password" placeholder="••••" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()}/></Fld><button onClick={go} disabled={ld} style={{...pB,width:"100%",justifyContent:"center",padding:11,fontSize:16,borderRadius:9,opacity:ld?0.7:1,marginTop:4}}>{ld?LL.signing:LL.login}</button></div></div>);}
+// ── TECH JOB FORM — block non-inventory, extra issues, waiting parts ──
+function TJF({form:f,setForm:sF,subJobs,onSubmit,label,scanner,setScanner,jobs,editId,inv,techs,lang,mode,db}){
+  const LL=LANG[lang];const md=PM[f.model]||null;const isO=f.model==="Other (Specify)";
+  const[err,setErr]=useState({});const[match,setMatch]=useState("");const[redoMsg,setRedoMsg]=useState("");const[isRedo,setIsRedo]=useState(false);const[hist,setHist]=useState("");const[locked,setLocked]=useState(false);const[batchRmk,setBatchRmk]=useState("");const[rmkLoaded,setRmkLoaded]=useState(false);const[pendingMatch,setPendingMatch]=useState(null);
+  const blocked=mode==="repair"&&match==="NOT_IN_INV";
+  const confirmMatch=(found)=>{const mk=Object.keys(PM).find(m=>m===found.product)||"Other (Specify)";const io=mk==="Other (Specify)"&&found.product;sF(p=>({...p,model:io?"Other (Specify)":mk,customModel:io?found.product:"",storage:found.size||"",color:found.color||"",grade:found.grade||"",batch:found.batchId||"",serial:found.serial||p.serial,imei:found.imei||p.imei}));setMatch(`${found.codeId?found.codeId+" — ":""}${found.product} ${found.size} ${found.color} (${found.batchId})`);setLocked(true);setBatchRmk(found.conditionRemark||found.batchRemark||"");setRmkLoaded(true);setPendingMatch(null);
+    const fi=found.imei,fs=found.serial;const done=jobs.filter(j=>isF(j.status)&&j.id!==editId&&((fi&&j.imei===fi)||(fs&&j.serial&&j.serial.toUpperCase()===fs.toUpperCase())));if(done.length>0){setIsRedo(true);sF(p=>({...p,jobType:"Redo"}));const ls=done.map(j=>{const tn=techs?.find(t=>t.id===j.techId);let line=`• ${tn?.name||j.techId} [${j.jobType}] ${sjS(j.subJobs)}`;if(j.redoReason)line+=`\n  ⚠ ${j.redoReason}${j.redoRemark?" — "+j.redoRemark:""}`;return line;});setRedoMsg(ls.join("\n"));}};
+  const proc=(im,sn)=>{
+    let found=null;const byImei=im&&im.length===15;if(byImei)found=inv.find(x=>x.imei===im);if(!found&&sn&&sn.length>=2)found=inv.find(x=>(x.serial&&x.serial.toUpperCase()===sn.toUpperCase())||(x.codeId&&x.codeId.toUpperCase()===sn.toUpperCase()));
+    if(found){if(byImei){confirmMatch(found);}else{setPendingMatch(found);setMatch(`${found.codeId?found.codeId+" — ":""}${found.product} ${found.size} ${found.color} (${found.batchId})`);}}else{setMatch("NOT_IN_INV");setLocked(false);setBatchRmk("");setRmkLoaded(false);setPendingMatch(null);}
+    const fImei=found?found.imei:im;const fSerial=found?found.serial:sn;
+    const done=jobs.filter(j=>isF(j.status)&&j.id!==editId&&((fImei&&j.imei===fImei)||(fSerial&&j.serial&&j.serial.toUpperCase()===fSerial.toUpperCase())));
+    if(done.length>0){setIsRedo(true);sF(p=>({...p,jobType:"Redo"}));const ls=done.map(j=>{const tn=techs?.find(t=>t.id===j.techId);let line=`• ${tn?.name||j.techId} [${j.jobType}] ${sjS(j.subJobs)}`;if(j.redoReason)line+=`\n  ⚠ ${j.redoReason}${j.redoRemark?" — "+j.redoRemark:""}${j.redoSubJobs?" ["+j.redoSubJobs+"]":""}`;return line;});setRedoMsg(ls.join("\n"));}else{setIsRedo(false);setRedoMsg("");}
+    const act=jobs.filter(j=>!isF(j.status)&&j.status!=="qc-pending"&&j.id!==editId&&((fImei&&j.imei===fImei)||(fSerial&&j.serial&&j.serial.toUpperCase()===fSerial.toUpperCase())));
+    setHist(act.length?act.map(j=>{const tn=techs?.find(t=>t.id===j.techId);return `• ${tn?.name||j.techId} [${j.jobType}] ${sjS(j.subJobs)} (${j.status})`;}).join("\n"):"");
   };
-
-  if(db.loading)return(
-    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh",background:T.bg,gap:16}}>
-      <AtomLogo size={60}/>
-      <span style={{color:T.accent,fontSize:14,fontWeight:600,letterSpacing:"1px"}}>{LL.loading}</span>
-    </div>
-  );
-
-  if(!user)return(
-    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:T.bg,fontFamily:"'Segoe UI',system-ui,-apple-system,sans-serif"}}>
-      {/* Subtle background glow */}
-      <div style={{position:"fixed",top:"30%",left:"50%",transform:"translate(-50%,-50%)",width:400,height:400,borderRadius:"50%",background:`radial-gradient(circle, ${T.glow} 0%, transparent 70%)`,pointerEvents:"none"}}/>
-      <div style={{background:T.card,borderRadius:20,padding:"40px 36px",width:360,border:`1px solid ${T.border}`,boxShadow:`0 16px 48px ${T.shadow}`,position:"relative"}}>
-        {/* Logo */}
-        <div style={{textAlign:"center",marginBottom:28}}>
-          <div style={{display:"inline-flex",alignItems:"center",gap:12,marginBottom:8}}>
-            <AtomLogo size={48}/>
-            <div style={{textAlign:"left"}}>
-              <div style={{fontSize:32,fontWeight:900,color:T.accent,letterSpacing:"2px",lineHeight:1}}>KIS</div>
-              <div style={{fontSize:10,fontWeight:700,color:T.muted,letterSpacing:"2.5px",textTransform:"uppercase",marginTop:2}}>Repair & Wholesales</div>
-            </div>
-          </div>
-        </div>
-        {/* Divider */}
-        <div style={{height:1,background:`linear-gradient(90deg, transparent, ${T.accent}40, transparent)`,marginBottom:24}}/>
-        <Fld label={LL.name}><input style={bI} value={loginName} onChange={e=>setLoginName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleLogin()} placeholder="Enter username" onFocus={e=>e.target.style.borderColor=T.accent} onBlur={e=>e.target.style.borderColor=T.border}/></Fld>
-        <Fld label={LL.password}><input style={bI} type="password" value={loginPass} onChange={e=>setLoginPass(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleLogin()} placeholder="Enter password" onFocus={e=>e.target.style.borderColor=T.accent} onBlur={e=>e.target.style.borderColor=T.border}/></Fld>
-        <button onClick={handleLogin} style={{...pB,width:"100%",justifyContent:"center",marginTop:12,padding:"12px 20px",fontSize:14}} onMouseEnter={e=>e.target.style.transform="translateY(-1px)"} onMouseLeave={e=>e.target.style.transform="translateY(0)"}>{LL.login}</button>
+  useEffect(()=>{if(mode==="repair"&&!locked&&f.imei&&f.imei.length===15&&!match)proc(f.imei,f.serial);},[f.imei]);
+  useEffect(()=>{if(mode==="repair"&&!locked&&f.serial&&f.serial.length>=2&&!match)proc(f.imei,f.serial);},[f.serial]);
+  const val=()=>{const e={};if(mode==="service"){if(!f.batch)e.batch="!";if(!f.jobType)e.jobType="!";if(f.subJobs.length===0)e.subJobs="≥1";}else{if(blocked){e.id=LL.notInInv;setErr(e);return false;}if(!f.imei&&!f.serial)e.id=LL.eitherReq;if(f.imei&&f.imei.length>0&&!vI(f.imei))e.imei=lang==="cn"?"IMEI必须是15位数字":`Invalid IMEI — must be exactly 15 digits (currently ${f.imei.length})`;if(f.serial&&!vS(f.serial))e.serial=lang==="cn"?"序列号需8-20位字母数字":"Invalid Serial — 8-20 alphanumeric";const mn=isO?f.customModel:f.model;if(!mn)e.model="!";if(!f.jobType)e.jobType="!";if(f.subJobs.length===0)e.subJobs="≥1";}setErr(e);return Object.keys(e).length===0;};
+  const doSubmit=()=>{if(!val())return;if(rmkLoaded&&db&&(f.imei||f.serial)){db.updateInventoryRemark(f.imei,f.serial,batchRmk);}onSubmit();};
+  return (<>
+    {mode==="service"?(<><Fld label={LL.selectBatch}><select value={f.batch} onChange={e=>sF(p=>({...p,batch:e.target.value}))} style={err.batch?eI:bI}><option value="">{LL.select}</option>{[...new Set(inv.map(i=>i.batchId))].map(b=><option key={b} value={b}>{b}</option>)}</select><EM m={err.batch}/></Fld><Fld label={LL.qty}><input type="number" min="1" style={bI} value={f.qty||1} onChange={e=>sF(p=>({...p,qty:Math.max(1,parseInt(e.target.value)||1)}))}/></Fld><Fld label={LL.remark}><textarea style={{...bI,minHeight:40,resize:"vertical"}} placeholder={LL.notes} value={f.remark||""} onChange={e=>sF(p=>({...p,remark:e.target.value}))}/></Fld></>):(<>
+      <Fld label={LL.imei15} hint={LL.scanHint}><div style={{position:"relative"}}><input style={{...(err.imei||blocked?eI:bI),paddingRight:42,fontFamily:"'JetBrains Mono',monospace"}} placeholder="000000000000000" inputMode="numeric" value={f.imei} onChange={e=>{const v=e.target.value.replace(/\D/g,"").slice(0,15);sF(p=>({...p,imei:v}));if(v.length===15)proc(v,f.serial);else{setMatch("");setRedoMsg("");setHist("");setIsRedo(false);setLocked(false);setBatchRmk("");setRmkLoaded(false);sF(p=>({...p,jobType:""}));}}} maxLength={15}/><button onClick={()=>setScanner(true)} style={{position:"absolute",right:5,top:"50%",transform:"translateY(-50%)",background:`linear-gradient(135deg,${T.accent},#6366F1)`,border:"none",borderRadius:5,width:30,height:26,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",color:"#fff"}}>{Ic.cam}</button></div>{f.imei&&<div style={{fontSize:11,marginTop:2,color:f.imei.length===15?T.success:T.dim}}>{f.imei.length}/15{f.imei.length===15?" ✓":""}</div>}<EM m={err.imei}/></Fld>
+      {/* Serial/CodeID hidden for KIS */}
+      {err.id&&<NB c={T.danger} bg="rgba(239,68,68,0.08)" bd="1px solid rgba(239,68,68,0.25)" ic={Ic.tri}>{err.id}</NB>}
+      {match&&match!=="NOT_IN_INV"&&<NB c={T.success} bg="rgba(16,185,129,0.08)" bd="1px solid rgba(16,185,129,0.25)" ic={Ic.zap}>{match}{locked?` — ${LL.locked}`:""}{pendingMatch&&<button onClick={()=>confirmMatch(pendingMatch)} style={{...pB,padding:"4px 12px",fontSize:11,marginLeft:8,borderRadius:5}}>✓ Confirm</button>}</NB>}
+      {blocked&&<NB c={T.danger} bg="rgba(239,68,68,0.12)" bd="2px solid rgba(239,68,68,0.4)" ic={Ic.tri}>{LL.notInInv}</NB>}
+      {redoMsg&&<NB c={T.danger} bg="rgba(239,68,68,0.1)" bd="2px solid rgba(239,68,68,0.3)" ic={Ic.rdo}>{redoMsg}</NB>}
+      {hist&&<NB c={T.amber} bg="rgba(217,119,6,0.08)" bd="1px solid rgba(217,119,6,0.25)" ic={Ic.info}>{hist}</NB>}
+      {/* BLOCK everything below if not in inventory */}
+      {!blocked&&<><div style={{height:1,background:T.border,margin:"2px 0 10px"}}/>
+      <Fld label={`${LL.phoneModel}${locked?" 🔒":""}`}><select value={f.model} disabled={locked} onChange={e=>{sF(p=>({...p,model:e.target.value,storage:"",color:"",customModel:""}));}} style={locked?lI:(err.model?eI:bI)}><option value="">{LL.select}</option>{Object.keys(PM).map(m=><option key={m} value={m}>{m}</option>)}</select><EM m={err.model}/></Fld>
+      {isO&&<Fld label="Model"><input style={locked?lI:bI} readOnly={locked} value={f.customModel} onChange={e=>sF(p=>({...p,customModel:e.target.value}))}/></Fld>}
+      {md&&!isO&&md.s.length>0&&<div className="fxG2" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7}}><Fld label={`${LL.storage}${locked?" 🔒":""}`}><select value={f.storage} disabled={locked} onChange={e=>sF(p=>({...p,storage:e.target.value}))} style={locked?lI:bI}><option value="">...</option>{md.s.map(s=><option key={s} value={s}>{s}</option>)}</select></Fld><Fld label={`${LL.color}${locked?" 🔒":""}`}><select value={f.color} disabled={locked} onChange={e=>sF(p=>({...p,color:e.target.value}))} style={locked?lI:bI}><option value="">...</option>{md.c.map(c=><option key={c} value={c}>{c}</option>)}</select></Fld></div>}
+      <Fld label={`${LL.grade}${locked?" 🔒":""}`}><select value={f.grade} disabled={locked} onChange={e=>sF(p=>({...p,grade:e.target.value}))} style={locked?lI:bI}><option value="">...</option>{GR.map(g=><option key={g} value={g}>{g}</option>)}</select></Fld>
+      <Fld label={`${LL.batchId}${locked?" 🔒":""}`}><input style={locked?{...lI,fontFamily:"monospace"}:{...bI,fontFamily:"monospace"}} readOnly={locked} value={f.batch} onChange={e=>sF(p=>({...p,batch:e.target.value}))}/></Fld>
+      {rmkLoaded&&<Fld label={`📝 ${LL.batchRemarkLabel}`}><textarea style={{...bI,minHeight:45,resize:"vertical",border:`1px solid ${T.amber}`,background:"rgba(217,119,6,0.05)"}} placeholder="Unit remark..." value={batchRmk} onChange={e=>setBatchRmk(e.target.value)}/></Fld>}
+      <Fld label={LL.remark}><textarea style={{...bI,minHeight:40,resize:"vertical"}} placeholder={LL.notes} value={f.remark||""} onChange={e=>sF(p=>({...p,remark:e.target.value}))}/></Fld>
+      <Fld label={LL.extraIssues}><textarea style={{...bI,minHeight:40,resize:"vertical"}} placeholder={LL.extraIssuesHint} value={f.extraIssues||""} onChange={e=>sF(p=>({...p,extraIssues:e.target.value}))}/></Fld>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}><label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}><input type="checkbox" checked={f.waitingParts||false} onChange={e=>sF(p=>({...p,waitingParts:e.target.checked}))} style={{width:16,height:16,accentColor:T.warning}}/><span style={{color:T.warning,fontSize:13,fontWeight:600}}>⏳ {LL.waitingParts}</span></label></div>
+      {f.waitingParts&&<Fld label={LL.waitingParts}><input style={{...bI,border:`1px solid ${T.warning}`}} placeholder={LL.partsDetailHint} value={f.partsDetail||""} onChange={e=>sF(p=>({...p,partsDetail:e.target.value}))}/></Fld>}
+      </>}
+    </>)}
+    {!blocked&&<><div style={{height:1,background:T.border,margin:"2px 0 10px"}}/>
+    <Fld label={LL.jobType}><JTS isRedo={isRedo} value={f.jobType} onChange={v=>{sF(p=>({...p,jobType:v}));setErr(p=>({...p,jobType:""}));}} lang={lang}/><EM m={err.jobType}/></Fld>
+    {f.jobType&&<Fld label={LL.subJobs}><SJS subJobs={subJobs.filter(s=>s.tab==="repair")} sel={f.subJobs} onChange={v=>{sF(p=>({...p,subJobs:v}));setErr(p=>({...p,subJobs:""}));}} lang={lang}/><EM m={err.subJobs}/></Fld>}
+    <button onClick={doSubmit} style={{...pB,width:"100%",justifyContent:"center",marginTop:4}}>{label}</button></>}
+  </>);
+}
+// ── EDIT JOB FORM — device info read-only, only job details editable ──
+function EditJobForm({form:f,setForm:sF,subJobs,onSubmit,lang}){
+  const LL=LANG[lang];const[err,setErr]=useState({});
+  const val=()=>{const e={};if(!f.jobType)e.jobType="!";if(f.subJobs.length===0)e.subJobs="≥1";setErr(e);return Object.keys(e).length===0;};
+  return (<>
+    {/* Device info — read only summary */}
+    <div style={{padding:10,background:T.inputBg,borderRadius:8,marginBottom:12,border:`1px solid ${T.border}`}}>
+      <div style={{fontSize:10,color:T.dim,fontWeight:600,textTransform:"uppercase",marginBottom:4}}>{LL.deviceInfo}</div>
+      <div style={{color:T.text,fontWeight:700,fontSize:14,marginBottom:2}}>{f.model}{f.storage?` · ${f.storage}`:""}{f.color?` · ${f.color}`:""}</div>
+      <div style={{display:"flex",gap:8,fontSize:11,fontFamily:"monospace",color:T.muted,flexWrap:"wrap"}}>
+        {f.imei&&<span style={{color:T.accent}}>IMEI: {f.imei}</span>}
+        {f.grade&&<span style={{color:T.purple}}>Grade: {f.grade}</span>}
+        {f.batch&&<span style={{color:T.dim}}>Batch: {f.batch}</span>}
+        {f.grade&&<span style={{color:T.dim}}>{f.grade}</span>}
       </div>
     </div>
-  );
-
-  // ── Stat Card ──
-  const StatCard=({label,value,icon})=>(
-    <div style={{background:T.card,borderRadius:12,border:`1px solid ${T.border}`,padding:"20px 24px",flex:"1 1 200px",transition:"all 0.2s",boxShadow:`0 2px 8px ${T.shadow}`}} onMouseEnter={e=>{e.currentTarget.style.borderColor=T.accent;e.currentTarget.style.boxShadow=`0 4px 16px ${T.glow}`;}} onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.boxShadow=`0 2px 8px ${T.shadow}`;}}>
-      <div style={{fontSize:22,marginBottom:8}}>{icon}</div>
-      <div style={{fontSize:22,fontWeight:800,color:T.text,marginBottom:2}}>{value}</div>
-      <div style={{fontSize:11,color:T.muted,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.5px"}}>{label}</div>
-    </div>
-  );
-
-  // ── Main App ──
-  return(
-    <div style={{background:T.bg,minHeight:"100vh",color:T.text,fontSize:fs,fontFamily:"'Segoe UI',system-ui,-apple-system,sans-serif"}}>
-      {/* Header */}
-      <div style={{background:T.card,borderBottom:`1px solid ${T.border}`,padding:"10px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:100,boxShadow:`0 1px 8px ${T.shadow}`}}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <AtomLogo size={32}/>
-          <div>
-            <span style={{color:T.accent,fontWeight:900,fontSize:18,letterSpacing:"1.5px"}}>KIS</span>
-            <span style={{color:T.dim,fontSize:9,fontWeight:600,marginLeft:8,letterSpacing:"1px",textTransform:"uppercase"}}>{LL.appSub}</span>
-          </div>
+    <Fld label={LL.jobType}><JTS isRedo={f.jobType==="Redo"} value={f.jobType} onChange={v=>{sF(p=>({...p,jobType:v}));setErr(p=>({...p,jobType:""}));}} lang={lang}/><EM m={err.jobType}/></Fld>
+    {f.jobType&&<Fld label={LL.subJobs}><SJS subJobs={subJobs.filter(s=>s.tab==="repair")} sel={f.subJobs} onChange={v=>{sF(p=>({...p,subJobs:v}));setErr(p=>({...p,subJobs:""}));}} lang={lang}/><EM m={err.subJobs}/></Fld>}
+    <Fld label={LL.remark}><textarea style={{...bI,minHeight:40,resize:"vertical"}} placeholder={LL.notes} value={f.remark||""} onChange={e=>sF(p=>({...p,remark:e.target.value}))}/></Fld>
+    <Fld label={LL.extraIssues}><textarea style={{...bI,minHeight:40,resize:"vertical"}} placeholder={LL.extraIssuesHint} value={f.extraIssues||""} onChange={e=>sF(p=>({...p,extraIssues:e.target.value}))}/></Fld>
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}><label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}><input type="checkbox" checked={f.waitingParts||false} onChange={e=>sF(p=>({...p,waitingParts:e.target.checked}))} style={{width:16,height:16,accentColor:T.warning}}/><span style={{color:T.warning,fontSize:13,fontWeight:600}}>⏳ {LL.waitingParts}</span></label></div>
+    {f.waitingParts&&<Fld label={LL.waitingParts}><input style={{...bI,border:`1px solid ${T.warning}`}} placeholder={LL.partsDetailHint} value={f.partsDetail||""} onChange={e=>sF(p=>({...p,partsDetail:e.target.value}))}/></Fld>}
+    <button onClick={()=>{if(val())onSubmit();}} style={{...pB,width:"100%",justifyContent:"center",marginTop:4}}>{Ic.chk} {LL.save}</button>
+  </>);
+}
+// ── TV DASHBOARD ──
+function TVDash({techs,jobs,inv,subJobs,lang,onClose}){
+  const LL=LANG[lang];
+  const[period,setPeriod]=useState("daily");
+  const today=td();
+  const getStart=()=>{const n=new Date();if(period==="daily")return today;if(period==="weekly"){const d=new Date(n);d.setDate(d.getDate()-d.getDay());return d.toISOString().split("T")[0];}return n.toISOString().slice(0,7);};
+  const rangeStart=getStart();
+  const inP=(ds)=>{if(!ds)return false;if(period==="daily")return ds.startsWith(today);if(period==="weekly")return ds.split("T")[0]>=rangeStart&&ds.split("T")[0]<=today;return ds.startsWith(rangeStart);};
+  const label=period==="daily"?LL.today:period==="weekly"?LL.thisWeek:LL.thisMonth;
+  const accent="#C9A84C",success="#4CAF6A",warning="#E8A840",danger="#D45050",purple="#8B5CF6",dim="#6B6355",bg="#0C0C0C",card="#161616",border="#2A2A2A";
+  const pJobs=jobs.filter(j=>j.mode!=="service"&&inP(j.dateIn));
+  const sJobs=jobs.filter(j=>j.mode==="service"&&inP(j.dateIn));
+  const done=pJobs.filter(j=>j.status==="completed");
+  const qcP=pJobs.filter(j=>j.status==="qc-pending");
+  const redo=pJobs.filter(j=>j.status==="redo-flagged");
+  const active=pJobs.filter(j=>j.status==="in-progress");
+  const glassD=inv.filter(i=>i.glassStatus==="serviced").length;
+  const glassT=inv.filter(i=>i.glassStatus!=="na").length;
+  const camD=inv.filter(i=>i.cameraStatus==="serviced").length;
+  const camT=inv.filter(i=>i.cameraStatus!=="na").length;
+  const housingD=inv.filter(i=>i.housingStatus==="serviced").length;
+  const housingT=inv.filter(i=>i.housingStatus!=="na").length;
+  const techStats=techs.filter(t=>t.role==="tech").map(t=>{const tj=pJobs.filter(j=>j.techId===t.id);const ts=sJobs.filter(j=>j.techId===t.id);return{...t,total:tj.length,done:tj.filter(j=>j.status==="completed").length,qc:tj.filter(j=>j.status==="qc-pending").length,redo:tj.filter(j=>j.status==="redo-flagged").length,active:tj.filter(j=>j.status==="in-progress").length,svc:ts.length};}).sort((a,b)=>b.total-a.total);
+  const Bar=({label:l,done:d,total:t,color})=>{const pct=t>0?Math.round(d/t*100):0;return(<div style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}><span style={{fontSize:13,color:"#F1F5F9",fontWeight:600}}>{l}</span><span style={{fontSize:12,color:dim}}>{d}/{t} ({pct}%)</span></div><div style={{height:8,borderRadius:4,background:"rgba(255,255,255,0.06)",overflow:"hidden"}}><div style={{height:"100%",width:pct+"%",borderRadius:4,background:color,transition:"width 0.5s"}}/></div></div>);};
+  return(<div style={{position:"fixed",inset:0,zIndex:2000,background:bg,overflow:"auto",fontFamily:"'Outfit',sans-serif"}}>
+    <div style={{maxWidth:1200,margin:"0 auto",padding:20}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <span style={{fontSize:22,fontWeight:800,color:"#F1F5F9"}}>KIS<span style={{color:accent}}> Repair</span></span>
+          <span style={{fontSize:12,color:dim}}>{LL.tvDashboard}</span>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <div style={{padding:"4px 10px",borderRadius:6,background:T.glow,border:`1px solid ${T.accent}30`}}>
-            <span style={{color:T.accent,fontSize:11,fontWeight:700}}>{user.name}</span>
+          <div style={{display:"flex",borderRadius:6,overflow:"hidden",border:`1px solid ${border}`}}>
+            {[{k:"daily",l:LL.daily},{k:"weekly",l:LL.weekly},{k:"monthly",l:LL.monthly}].map(p=><button key={p.k} onClick={()=>setPeriod(p.k)} style={{padding:"6px 16px",fontSize:12,fontWeight:period===p.k?700:400,background:period===p.k?accent:"transparent",color:period===p.k?"#fff":dim,border:"none",cursor:"pointer",transition:"all 0.2s"}}>{p.l}</button>)}
           </div>
-          {["S","M","L"].map(s=><button key={s} onClick={()=>setSz(s)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,borderRadius:5,border:`1px solid ${sz===s?T.accent:T.border}`,background:sz===s?`linear-gradient(135deg, ${T.accentDark}, ${T.accent})`:"transparent",color:sz===s?"#111":T.dim,cursor:"pointer",transition:"all 0.2s"}}>{s}</button>)}
-          <button onClick={()=>setTheme(theme==="dark"?"light":"dark")} style={{background:"none",border:`1px solid ${T.border}`,borderRadius:6,cursor:"pointer",fontSize:14,padding:"3px 8px",color:T.text,transition:"all 0.2s"}}>{theme==="dark"?"☀️":"🌙"}</button>
-          <select value={lang} onChange={e=>setLang(e.target.value)} style={{...bI,width:"auto",padding:"4px 8px",fontSize:11,borderRadius:6}}>
-            <option value="en">EN</option><option value="cn">中文</option>
-          </select>
-          <button onClick={()=>setUser(null)} style={{padding:"5px 12px",borderRadius:6,border:`1px solid ${T.danger}40`,background:"transparent",color:T.danger,cursor:"pointer",fontSize:11,fontWeight:600,transition:"all 0.2s"}} onMouseEnter={e=>{e.target.style.background=T.danger;e.target.style.color="#fff";}} onMouseLeave={e=>{e.target.style.background="transparent";e.target.style.color=T.danger;}}>{LL.logout}</button>
+          <button onClick={onClose} style={{background:"rgba(255,255,255,0.08)",border:"none",borderRadius:8,width:34,height:34,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",color:dim,fontSize:18}}>✕</button>
         </div>
       </div>
-
-      {/* Tabs */}
-      <div style={{display:"flex",gap:2,padding:"6px 20px",borderBottom:`1px solid ${T.border}`,background:T.card}}>
-        {["dashboard","settings"].map(t=><button key={t} onClick={()=>setTab(t)} style={{padding:"8px 18px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:700,letterSpacing:"0.3px",background:tab===t?`linear-gradient(135deg, ${T.accentDark}, ${T.accent})`:  "transparent",color:tab===t?"#111":T.muted,transition:"all 0.2s",textTransform:"capitalize"}}>{LL[t]||t}</button>)}
+      <div style={{fontSize:11,color:dim,marginBottom:16,textAlign:"center"}}>{label} — {rangeStart}{period!=="daily"?" to "+today:""}</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10,marginBottom:20}}>
+        {[{l:LL.totalJobs,v:pJobs.length,c:accent},{l:LL.completed,v:done.length,c:success},{l:LL.activeJobs,v:active.length,c:warning},{l:LL.qcPending,v:qcP.length,c:"#F97316"},{l:LL.redo,v:redo.length,c:danger},{l:LL.services,v:sJobs.length,c:purple}].map(s=><div key={s.l} style={{background:card,borderRadius:10,padding:14,border:`1px solid ${border}`,textAlign:"center"}}>
+          <div style={{fontSize:28,fontWeight:800,color:s.c}}>{s.v}</div>
+          <div style={{fontSize:11,color:dim,fontWeight:600,textTransform:"uppercase",marginTop:2}}>{s.l}</div>
+        </div>)}
       </div>
-
-      {/* Content */}
-      <div style={{padding:20,maxWidth:1200,margin:"0 auto"}}>
-        {tab==="dashboard"&&<div>
-          {/* Welcome */}
-          <div style={{marginBottom:24}}>
-            <h2 style={{color:T.text,fontSize:22,fontWeight:800,margin:"0 0 4px"}}>{LL.welcome}, <span style={{color:T.accent}}>{user.name}</span></h2>
-            <p style={{color:T.muted,fontSize:13,margin:0}}>{td()}</p>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
+        <div style={{background:card,borderRadius:10,padding:16,border:`1px solid ${border}`}}>
+          <h3 style={{color:"#F1F5F9",fontSize:14,fontWeight:700,margin:"0 0 12px"}}>{LL.serviceProgress}</h3>
+          <Bar label="Glass" done={glassD} total={glassT} color={accent}/>
+          <Bar label="Camera" done={camD} total={camT} color={purple}/>
+          <Bar label="Housing" done={housingD} total={housingT} color={warning}/>
+        </div>
+        <div style={{background:card,borderRadius:10,padding:16,border:`1px solid ${border}`}}>
+          <h3 style={{color:"#F1F5F9",fontSize:14,fontWeight:700,margin:"0 0 12px"}}>{LL.invSummary}</h3>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            <div style={{padding:10,borderRadius:6,background:"rgba(201,168,76,0.08)",textAlign:"center"}}><div style={{fontSize:22,fontWeight:800,color:accent}}>{inv.length}</div><div style={{fontSize:10,color:dim}}>{LL.totalUnits}</div></div>
+            <div style={{padding:10,borderRadius:6,background:"rgba(16,185,129,0.08)",textAlign:"center"}}><div style={{fontSize:22,fontWeight:800,color:success}}>{inv.filter(i=>i.glassStatus==="serviced"&&i.cameraStatus==="serviced"&&i.housingStatus==="serviced").length}</div><div style={{fontSize:10,color:dim}}>{LL.allServiced}</div></div>
+            <div style={{padding:10,borderRadius:6,background:"rgba(249,115,22,0.08)",textAlign:"center"}}><div style={{fontSize:22,fontWeight:800,color:"#F97316"}}>{inv.filter(i=>{const uj=getUJ(i.imei,i.serial,jobs);const lat=uj.filter(j=>j.component==="full"||!j.component).sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn))[0];return lat&&lat.status==="qc-pending";}).length}</div><div style={{fontSize:10,color:dim}}>{LL.qcReady2}</div></div>
+            <div style={{padding:10,borderRadius:6,background:"rgba(239,68,68,0.08)",textAlign:"center"}}><div style={{fontSize:22,fontWeight:800,color:danger}}>{redo.length}</div><div style={{fontSize:10,color:dim}}>{LL.pendingRedo}</div></div>
           </div>
-
-          {/* Stat Cards */}
-          <div style={{display:"flex",gap:16,flexWrap:"wrap",marginBottom:24}}>
-            <StatCard icon="⚡" label={LL.status} value={LL.online}/>
-            <StatCard icon="📅" label={LL.todayDate} value={new Date().toLocaleDateString()}/>
-            <StatCard icon="🔧" label={LL.version} value="1.0.0"/>
-          </div>
-
-          {/* Main Card */}
-          <div style={{background:T.card,borderRadius:14,border:`1px solid ${T.border}`,padding:28,boxShadow:`0 2px 12px ${T.shadow}`}}>
-            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
-              <AtomLogo size={28}/>
-              <h3 style={{margin:0,fontSize:16,fontWeight:700,color:T.text}}>KIS {LL.appSub}</h3>
-            </div>
-            <div style={{height:1,background:`linear-gradient(90deg, ${T.accent}60, transparent)`,marginBottom:16}}/>
-            <p style={{color:T.muted,fontSize:13,lineHeight:1.6,margin:0}}>
-              Your repair and wholesale management system is ready. Use the navigation above to access different modules.
-            </p>
-          </div>
-        </div>}
-
-        {tab==="settings"&&<div>
-          <h3 style={{color:T.text,fontSize:18,fontWeight:800,marginBottom:16}}>{LL.settings}</h3>
-          <div style={{background:T.card,borderRadius:14,border:`1px solid ${T.border}`,padding:24,boxShadow:`0 2px 12px ${T.shadow}`}}>
-            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
-              <div style={{width:40,height:40,borderRadius:10,background:`linear-gradient(135deg, ${T.accentDark}, ${T.accent})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,color:"#111",fontWeight:800}}>{user.name?.[0]?.toUpperCase()}</div>
-              <div>
-                <div style={{fontWeight:700,fontSize:14,color:T.text}}>{user.name}</div>
-                <div style={{fontSize:11,color:T.muted,textTransform:"uppercase",letterSpacing:"0.5px"}}>{user.role||"user"}</div>
-              </div>
-            </div>
-            <div style={{height:1,background:T.border,marginBottom:16}}/>
-            <div style={{display:"grid",gap:12}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 14px",background:T.card2,borderRadius:8,border:`1px solid ${T.border}`}}>
-                <span style={{fontSize:12,color:T.muted,fontWeight:600}}>Theme</span>
-                <span style={{fontSize:12,color:T.text,fontWeight:700,textTransform:"capitalize"}}>{theme}</span>
-              </div>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 14px",background:T.card2,borderRadius:8,border:`1px solid ${T.border}`}}>
-                <span style={{fontSize:12,color:T.muted,fontWeight:600}}>Language</span>
-                <span style={{fontSize:12,color:T.text,fontWeight:700}}>{lang==="en"?"English":"中文"}</span>
-              </div>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 14px",background:T.card2,borderRadius:8,border:`1px solid ${T.border}`}}>
-                <span style={{fontSize:12,color:T.muted,fontWeight:600}}>Font Size</span>
-                <span style={{fontSize:12,color:T.text,fontWeight:700}}>{sz}</span>
-              </div>
-            </div>
-          </div>
-        </div>}
+        </div>
       </div>
+      <div style={{background:card,borderRadius:10,padding:16,border:`1px solid ${border}`}}>
+        <h3 style={{color:"#F1F5F9",fontSize:14,fontWeight:700,margin:"0 0 12px"}}>{LL.techPerf} — {label}</h3>
+        {techStats.length===0?<div style={{color:dim,textAlign:"center",padding:20}}>{LL.noTechs}</div>:
+        <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead><tr style={{borderBottom:`1px solid ${border}`}}>
+            {[LL.techs,"Total",LL.done,"QC",LL.redo,LL.activeJobs,LL.services].map(h=><th key={h} style={{padding:"8px 10px",textAlign:h===LL.techs?"left":"center",color:dim,fontSize:10,fontWeight:600,textTransform:"uppercase"}}>{h}</th>)}
+          </tr></thead>
+          <tbody>{techStats.map(t=><tr key={t.id} style={{borderBottom:`1px solid ${border}`}}>
+            <td style={{padding:"10px 10px",color:"#F1F5F9",fontWeight:600,fontSize:13}}>{t.name}</td>
+            <td style={{padding:"10px",textAlign:"center",fontWeight:800,fontSize:16,color:accent}}>{t.total}</td>
+            <td style={{padding:"10px",textAlign:"center",fontWeight:700,fontSize:14,color:success}}>{t.done}</td>
+            <td style={{padding:"10px",textAlign:"center",fontWeight:700,fontSize:14,color:"#F97316"}}>{t.qc}</td>
+            <td style={{padding:"10px",textAlign:"center",fontWeight:700,fontSize:14,color:t.redo>0?danger:dim}}>{t.redo}</td>
+            <td style={{padding:"10px",textAlign:"center",fontWeight:700,fontSize:14,color:warning}}>{t.active}</td>
+            <td style={{padding:"10px",textAlign:"center",fontWeight:700,fontSize:14,color:purple}}>{t.svc}</td>
+          </tr>)}</tbody>
+        </table></div>}
+      </div>
+    </div>
+  </div>);
+}
+// ── PARTS INVENTORY TAB ──
+const PARTS_ENABLED=false; // Set to true when parts inventory is ready
+const matchPartModel=(partModel,unitProduct)=>{if(!partModel||!unitProduct)return false;const pm=partModel.toLowerCase().trim();const up=unitProduct.toLowerCase().trim();if(pm===up)return true;const pmNum=pm.replace("iphone ","").trim();const upNum=up.replace("iphone ","").trim();if(pmNum===upNum)return true;const parts=pm.split("/").map(s=>s.trim().replace("iphone ","").trim());return parts.some(p=>p===upNum);};
+const PARTS_CATS=["All","Housing","LCD","Battery","Screen","Camera","Other"];
+function PartsInventoryTab({partsInv,db,inv,lang}){
+  const LL=LANG[lang||"en"];
+  const[cat,setCat]=useState("All");const[search,setSearch]=useState("");const[viewMode,setViewMode]=useState("list");const[showLow,setShowLow]=useState(false);const[modelFilter,setModelFilter]=useState("All");
+  const[showAdd,setShowAdd]=useState(false);const[editPart,setEditPart]=useState(null);const[incoming,setIncoming]=useState(null);
+  const[usageDateFrom,setUsageDateFrom]=useState("");
+  const[usageDateTo,setUsageDateTo]=useState("");
+  const inDateRange=(dateStr)=>{if(!dateStr)return false;const d=dateStr.slice(0,10);if(usageDateFrom&&d<usageDateFrom)return false;if(usageDateTo&&d>usageDateTo)return false;return true;};
+  const hasDateFilter=usageDateFrom||usageDateTo;
+  const usageMap=useMemo(()=>{const m={};(inv||[]).forEach(it=>{if(hasDateFilter){const hasPartInRange=(it.partsUsed||[]).some(pu=>pu.usedAt&&inDateRange(pu.usedAt));if(hasPartInRange){(it.partsUsed||[]).forEach(pu=>{if(pu.usedAt&&inDateRange(pu.usedAt))m[pu.id]=(m[pu.id]||0)+1;});return;}const sl=(it.cameraDetail||{}).stepLog||[];const hasStepInRange=sl.some(s=>s.at&&inDateRange(s.at));if(!hasStepInRange)return;}(it.partsUsed||[]).forEach(pu=>{m[pu.id]=(m[pu.id]||0)+1;});});return m;},[inv,usageDateFrom,usageDateTo]);
+  const totalUsageMap=useMemo(()=>{const m={};(inv||[]).forEach(it=>{(it.partsUsed||[]).forEach(pu=>{m[pu.id]=(m[pu.id]||0)+1;});});return m;},[inv]);
+  const[form,setForm]=useState({category:"Housing",name:"",model:"",color:"",grade:"",qty:0,cost:0,supplier:"",min_stock:5});
+  const allModels=["All",...[...new Set((partsInv||[]).map(p=>p.model).filter(Boolean))].sort()];
+  const[usageDateOnly,setUsageDateOnly]=useState(false);
+  const filtered=(partsInv||[]).filter(p=>(cat==="All"||p.category===cat)&&(modelFilter==="All"||(p.model||"")===modelFilter)&&(!showLow||p.qty<=p.min_stock)&&(!search||p.name.toLowerCase().includes(search.toLowerCase())||((p.model||"").toLowerCase().includes(search.toLowerCase())))&&(!usageDateOnly||!hasDateFilter||(usageMap[p.id]||0)>0));
+  const resetForm=()=>setForm({category:"Housing",name:"",model:"",color:"",grade:"",qty:0,cost:0,supplier:"",min_stock:5});
+  const handleAdd=async()=>{if(!form.name.trim())return;await db.addPart({...form,active:true});resetForm();setShowAdd(false);};
+  const handleEdit=async()=>{if(!editPart||!form.name.trim())return;await db.updatePart(editPart.id,{category:form.category,name:form.name,model:form.model,color:form.color,grade:form.grade,qty:form.qty,cost:form.cost,supplier:form.supplier,min_stock:form.min_stock});setEditPart(null);resetForm();};
+  const handleDel=async(p)=>{if(!confirm("Delete part: "+p.name+"?"))return;await db.removePart(p.id);};
+  const qtyColor=(p)=>{if(p.qty<=p.min_stock)return T.danger;if(p.qty<=p.min_stock*2)return T.warning;return T.success;};
+  const PartForm=({onSubmit,title,onClose})=><Mod title={title} onClose={onClose} w="480px">
+    <Fld label="Category"><select style={bI} value={form.category} onChange={e=>setForm({...form,category:e.target.value})}>{PARTS_CATS.filter(c=>c!=="All").map(c=><option key={c} value={c}>{c}</option>)}</select></Fld>
+    <Fld label="Name *"><input style={bI} value={form.name} onChange={e=>setForm({...form,name:e.target.value})} autoFocus/></Fld>
+    <Fld label="Model"><input style={bI} value={form.model} onChange={e=>setForm({...form,model:e.target.value})} placeholder="e.g. iPhone 13 Pro"/></Fld>
+    <div style={{display:"flex",gap:8}}><Fld label="Color"><input style={{...bI,width:100}} value={form.color} onChange={e=>setForm({...form,color:e.target.value})}/></Fld><Fld label="Grade"><input style={{...bI,width:100}} value={form.grade} onChange={e=>setForm({...form,grade:e.target.value})}/></Fld></div>
+    <div style={{display:"flex",gap:8}}><Fld label="Qty"><input style={{...bI,width:80}} type="number" value={form.qty} onChange={e=>setForm({...form,qty:parseInt(e.target.value)||0})}/></Fld><Fld label="Cost/Unit"><input style={{...bI,width:100}} type="number" step="0.01" value={form.cost} onChange={e=>setForm({...form,cost:parseFloat(e.target.value)||0})}/></Fld><Fld label="Min Stock"><input style={{...bI,width:80}} type="number" value={form.min_stock} onChange={e=>setForm({...form,min_stock:parseInt(e.target.value)||0})}/></Fld></div>
+    <Fld label="Supplier"><input style={bI} value={form.supplier} onChange={e=>setForm({...form,supplier:e.target.value})}/></Fld>
+    <button onClick={onSubmit} style={{...pB,width:"100%",justifyContent:"center"}}>{Ic.chk} Save</button>
+  </Mod>;
+  return <div>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:5}}>
+      <h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:0}}>{LL.partsInvTitle} ({filtered.length})</h3>
+      <div style={{display:"flex",gap:4}}>
+        <button onClick={()=>{resetForm();setShowAdd(true);}} style={{...pB,fontSize:11,padding:"5px 9px"}}>{Ic.plus} {LL.addPart}</button>
+        <label style={{...gB,fontSize:11,padding:"5px 9px",cursor:"pointer",display:"inline-flex",alignItems:"center",gap:3}}>{Ic.up} {lang==="cn"?"导入来货":"Import Incoming"}<input type="file" accept=".csv,.xlsx,.xls" onChange={async e=>{const file=e.target.files[0];if(!file)return;e.target.value="";try{const X=await import("https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs");const buf=await file.arrayBuffer();const wb=X.read(buf);const ws=wb.Sheets[wb.SheetNames[0]];const rows=X.utils.sheet_to_json(ws);if(!rows.length){alert("No data found");return;}const items=rows.map(r=>{const name=(r.Name||r.name||"").toString().trim();const inc=parseInt(r.Incoming||r.incoming||0)||0;if(!name||inc<=0)return null;const category=(r.Category||r.category||"Housing").toString().trim();const model=(r.Model||r.model||"").toString().trim();const color=(r.Color||r.color||"").toString().trim();const grade=(r.Grade||r.grade||"").toString().trim();const cost=parseFloat(r.Cost||r.cost||r["Cost/Unit"]||0)||0;const supplier=(r.Supplier||r.supplier||"").toString().trim();const minStock=parseInt(r.Min_Stock||r.min_stock||r["Min Stock"]||5)||5;const currentQty=parseInt(r["Current Qty"]||r.Qty||r.qty||0)||0;const existing=(partsInv||[]).find(p=>p.name.toLowerCase()===name.toLowerCase()&&(p.model||"").toLowerCase()===model.toLowerCase()&&(p.category||"").toLowerCase()===category.toLowerCase());return{name,category,model,color,grade,cost,supplier,minStock,incoming:inc,currentQty:existing?existing.qty:currentQty,existingId:existing?existing.id:null,isNew:!existing};}).filter(Boolean);if(!items.length){alert(lang==="cn"?"没有找到来货数据（Incoming列需 > 0）":"No incoming data found (Incoming column must be > 0)");return;}setIncoming(items);}catch(err){alert("Import error: "+err.message);}}} style={{display:"none"}}/></label>
+        <button onClick={async()=>{const X=await import("https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs");const rows=(partsInv||[]).map(p=>({Category:p.category,Name:p.name,Model:p.model||"",Color:p.color||"",Grade:p.grade||"","Current Qty":p.qty||0,Incoming:0,Cost:p.cost||0,Supplier:p.supplier||"","Min Stock":p.min_stock||5}));const ws=X.utils.json_to_sheet(rows);const wb=X.utils.book_new();X.utils.book_append_sheet(wb,ws,"Parts");X.writeFile(wb,"parts_inventory_template.xlsx");}} style={{...gB,fontSize:11,padding:"5px 9px"}}>{Ic.dl} {lang==="cn"?"模板":"Template"}</button>
+      </div>
+    </div>
+    <div style={{display:"flex",gap:5,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
+      <select value={cat} onChange={e=>setCat(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"6px 8px"}}>{PARTS_CATS.map(c=><option key={c} value={c}>{c}</option>)}</select>
+      <select value={modelFilter} onChange={e=>setModelFilter(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"6px 8px"}}>{allModels.map(m=><option key={m} value={m}>{m}</option>)}</select>
+      <button onClick={()=>setShowLow(!showLow)} style={{...gB,padding:"5px 10px",fontSize:11,background:showLow?"rgba(239,68,68,0.12)":"transparent",color:showLow?T.danger:T.dim,borderColor:showLow?T.danger:T.border}}>⚠ {showLow?LL.showingLow:LL.showLow}</button>
+      <div style={{display:"flex",gap:3,alignItems:"center"}}><span style={{fontSize:10,color:T.dim}}>{lang==="cn"?"从":"From"}</span><input type="date" value={usageDateFrom} onChange={e=>setUsageDateFrom(e.target.value)} style={{...bI,width:"auto",fontSize:11,padding:"5px 7px",colorScheme:"dark"}}/><span style={{fontSize:10,color:T.dim}}>{lang==="cn"?"至":"To"}</span><input type="date" value={usageDateTo} onChange={e=>setUsageDateTo(e.target.value)} style={{...bI,width:"auto",fontSize:11,padding:"5px 7px",colorScheme:"dark"}}/>{hasDateFilter&&<><button onClick={()=>setUsageDateOnly(!usageDateOnly)} style={{...gB,padding:"4px 8px",fontSize:10,background:usageDateOnly?"rgba(245,158,11,0.15)":"transparent",color:usageDateOnly?T.warning:T.dim,borderColor:usageDateOnly?T.warning:T.border}}>{lang==="cn"?"仅显示已用":"Used Only"}</button><button onClick={()=>{setUsageDateFrom("");setUsageDateTo("");setUsageDateOnly(false);}} style={{...gB,padding:"4px 6px",fontSize:10}}>✕</button></>}</div>
+      <div style={{position:"relative",flex:1,minWidth:140}}><input style={{...bI,paddingLeft:38,fontSize:12}} placeholder={LL.searchParts} value={search} onChange={e=>setSearch(e.target.value)}/><div style={{position:"absolute",left:7,top:"50%",transform:"translateY(-50%)",color:T.dim}}>{Ic.srch}</div></div>
+      <div style={{display:"flex",borderRadius:6,overflow:"hidden",border:`1px solid ${T.border}`}}><button onClick={()=>setViewMode("list")} style={{padding:"5px 10px",fontSize:11,background:viewMode==="list"?T.accent:"transparent",color:viewMode==="list"?"#fff":T.dim,border:"none",cursor:"pointer"}}>{LL.listView}</button><button onClick={()=>setViewMode("model")} style={{padding:"5px 10px",fontSize:11,background:viewMode==="model"?T.accent:"transparent",color:viewMode==="model"?"#fff":T.dim,border:"none",cursor:"pointer"}}>{LL.modelView}</button></div>
+    </div>
+    {incoming&&<div style={{marginBottom:14,background:T.card,borderRadius:10,border:`1px solid ${T.warning}`,padding:14}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <h3 style={{color:T.warning,fontSize:14,fontWeight:700,margin:0}}>📦 {lang==="cn"?"来货确认":"Incoming Goods"} ({incoming.length} {lang==="cn"?"项":"items"})</h3>
+        <div style={{display:"flex",gap:4}}>
+          <button onClick={async()=>{if(!confirm(lang==="cn"?`确认 ${incoming.length} 项来货入库？`:`Confirm ${incoming.length} items to inventory?`))return;let added=0,restocked=0;for(const it of incoming){if(it.existingId){await db.restockPart(it.existingId,it.incoming);restocked++;}else{await db.addPart({category:it.category,name:it.name,model:it.model,color:it.color,grade:it.grade,qty:it.incoming,cost:it.cost,supplier:it.supplier,min_stock:it.minStock,active:true});added++;}}alert(lang==="cn"?`入库完成！补货: ${restocked}, 新增: ${added}`:`Done! Restocked: ${restocked}, New: ${added}`);setIncoming(null);}} style={{...pB,padding:"6px 14px",fontSize:12}}>✅ {lang==="cn"?"确认入库":"Confirm All"}</button>
+          <button onClick={()=>setIncoming(null)} style={{...dB,padding:"6px 10px",fontSize:12}}>✕</button>
+        </div>
+      </div>
+      <div style={{overflow:"auto",maxHeight:"40vh"}}><table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr style={{borderBottom:`1px solid ${T.border}`}}>{["",lang==="cn"?"类别":"Category",lang==="cn"?"名称":"Name",lang==="cn"?"型号":"Model",lang==="cn"?"颜色":"Color",lang==="cn"?"现有":"Current",lang==="cn"?"来货":"Incoming",lang==="cn"?"入库后":"After"].map(h=><th key={h} style={{padding:"6px 6px",textAlign:"left",color:T.dim,fontSize:9,fontWeight:600}}>{h}</th>)}</tr></thead><tbody>{incoming.map((it,i)=><tr key={i} style={{borderBottom:`1px solid ${T.border}`}}>
+        <td style={{padding:"5px 6px"}}>{it.isNew?<span style={{padding:"1px 5px",borderRadius:3,fontSize:8,fontWeight:700,background:"rgba(16,185,129,0.15)",color:T.success}}>NEW</span>:<span style={{padding:"1px 5px",borderRadius:3,fontSize:8,fontWeight:600,background:"rgba(201,168,76,0.12)",color:T.accent}}>RESTOCK</span>}</td>
+        <td style={{padding:"5px 6px",fontSize:10,color:T.muted}}>{it.category}</td>
+        <td style={{padding:"5px 6px",fontSize:11,color:T.text,fontWeight:600}}>{it.name}</td>
+        <td style={{padding:"5px 6px",fontSize:10,color:T.muted}}>{it.model||"—"}</td>
+        <td style={{padding:"5px 6px",fontSize:10,color:T.muted}}>{it.color||"—"}</td>
+        <td style={{padding:"5px 6px",fontSize:11,color:T.dim,textAlign:"center"}}>{it.currentQty}</td>
+        <td style={{padding:"5px 6px",fontSize:12,fontWeight:700,color:T.warning,textAlign:"center"}}>+{it.incoming}</td>
+        <td style={{padding:"5px 6px",fontSize:12,fontWeight:700,color:T.success,textAlign:"center"}}>{it.currentQty+it.incoming}</td>
+      </tr>)}</tbody></table></div>
+    </div>}
+    <div style={{fontSize:10,color:T.muted,marginBottom:5}}>{filtered.length} {LL.partsInvTitle?.split(" ")[0]||"parts"}{showLow?` (${LL.showingLow})`:""}</div>
+    {filtered.length===0?<div style={{textAlign:"center",padding:30,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`,fontSize:12}}>{LL.noParts}</div>:
+    viewMode==="model"?(()=>{const groups={};filtered.forEach(p=>{const m=p.model||"Unknown";if(!groups[m])groups[m]=[];groups[m].push(p);});return <div style={{display:"grid",gap:8}}>{Object.entries(groups).sort((a,b)=>a[0].localeCompare(b[0])).map(([model,parts])=>{const totalQty=parts.reduce((s,p)=>s+p.qty,0);const hasLow=parts.some(p=>p.qty<=p.min_stock);return <div key={model} style={{background:T.card,borderRadius:8,padding:"10px 12px",border:`1px solid ${hasLow?T.danger:T.border}`}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+        <span style={{color:T.text,fontWeight:700,fontSize:13}}>{model}</span>
+        <span style={{color:totalQty>0?T.success:T.danger,fontWeight:700,fontSize:12}}>Total: {totalQty}</span>
+      </div>
+      <div style={{display:"grid",gap:2}}>{parts.map(p=><div key={p.id} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0",borderBottom:`1px solid ${T.border}`}}>
+        <span style={{padding:"1px 4px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(201,168,76,0.1)",color:T.accent,minWidth:50}}>{p.category}</span>
+        <span style={{fontSize:11,color:T.text,flex:1}}>{p.name.replace(model+" ","").replace("iPhone ","")}{p.color?" · "+p.color:""}{p.grade?" · "+p.grade:""}</span>
+        <span style={{fontSize:12,fontWeight:700,color:qtyColor(p),minWidth:40,textAlign:"right"}}>{p.qty}{p.qty<=p.min_stock&&<span style={{fontSize:8,color:T.danger}}> LOW</span>}</span>{hasDateFilter?usageMap[p.id]>0&&<span style={{fontSize:9,color:T.warning,minWidth:30,textAlign:"right"}}> range:{usageMap[p.id]}</span>:totalUsageMap[p.id]>0&&<span style={{fontSize:9,color:T.purple,minWidth:30,textAlign:"right"}}> used:{totalUsageMap[p.id]}</span>}
+        <button onClick={()=>{setForm({category:p.category,name:p.name,model:p.model||"",color:p.color||"",grade:p.grade||"",qty:p.qty||0,cost:p.cost||0,supplier:p.supplier||"",min_stock:p.min_stock||5});setEditPart(p);}} style={{...gB,padding:"1px 4px",fontSize:9}}>{Ic.edt}</button>
+      </div>)}</div>
+    </div>;})}</div>;})():
+    <div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,overflow:"auto",maxHeight:"70vh"}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:700}}><thead style={{position:"sticky",top:0,zIndex:5,background:T.card}}><tr style={{borderBottom:`1px solid ${T.border}`}}>{[LL.category||"Category",LL.name||"Name",LL.phoneModel||"Model",LL.color||"Color",LL.grade||"Grade","Qty",LL.usedLabel||"Used",LL.cost||"Cost",LL.supplier||"Supplier",""].map(h=><th key={h} style={{padding:"7px 6px",textAlign:"left",color:T.dim,fontSize:9,fontWeight:600,textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead><tbody>{filtered.map(p=><tr key={p.id} style={{borderBottom:`1px solid ${T.border}`}}>
+      <td style={{padding:"6px",fontSize:11,color:T.muted}}><span style={{padding:"1px 5px",borderRadius:3,fontSize:10,fontWeight:600,background:"rgba(201,168,76,0.1)",color:T.accent}}>{p.category}</span></td>
+      <td style={{padding:"6px",fontSize:12,color:T.text,fontWeight:600}}>{p.name}</td>
+      <td style={{padding:"6px",fontSize:11,color:T.muted}}>{p.model||"—"}</td>
+      <td style={{padding:"6px",fontSize:11,color:T.muted}}>{p.color||"—"}</td>
+      <td style={{padding:"6px",fontSize:11,color:T.muted}}>{p.grade||"—"}</td>
+      <td style={{padding:"6px",fontSize:12,fontWeight:700,color:qtyColor(p)}}>{p.qty}{p.qty<=p.min_stock&&<span style={{marginLeft:3,fontSize:9,color:T.danger}}>LOW</span>}</td>
+      <td style={{padding:"6px",fontSize:12,fontWeight:600,color:usageMap[p.id]?hasDateFilter?T.warning:T.purple:T.dim}}>{usageMap[p.id]||0}{hasDateFilter&&totalUsageMap[p.id]>0&&<span style={{fontSize:9,color:T.dim,fontWeight:400}}> /{totalUsageMap[p.id]}</span>}</td>
+      <td style={{padding:"6px",fontSize:11,color:T.muted}}>{p.cost>0?"RM "+p.cost.toFixed(2):"—"}</td>
+      <td style={{padding:"6px",fontSize:11,color:T.muted}}>{p.supplier||"—"}</td>
+      <td style={{padding:"6px",display:"flex",gap:3}}><button onClick={()=>{setForm({category:p.category,name:p.name,model:p.model||"",color:p.color||"",grade:p.grade||"",qty:p.qty||0,cost:p.cost||0,supplier:p.supplier||"",min_stock:p.min_stock||5});setEditPart(p);}} style={{...gB,padding:"2px 5px",fontSize:9}}>{Ic.edt}</button><button onClick={()=>handleDel(p)} style={{...dB,padding:"2px 5px",fontSize:9}}>{Ic.del}</button></td>
+    </tr>)}</tbody></table></div>}
+    {showAdd&&<PartForm title="Add Part" onSubmit={handleAdd} onClose={()=>setShowAdd(false)}/>}
+    {editPart&&<PartForm title={"Edit: "+editPart.name} onSubmit={handleEdit} onClose={()=>{setEditPart(null);resetForm();}}/>}
+  </div>;
+}
+// ── ADMIN ──
+function Admin({techs,jobs:allJobs,subJobs,inv,db,lang,user,repairHouses,adminLogs,remarkCodes,feedback,commRates,partsInv,chatMsgs,notifs,buyers,buyerOrders,orderItems}){
+  const jobs=allJobs.filter(j=>!j.deleted);const deletedJobs=allJobs.filter(j=>j.deleted);
+  const handleDelete=async(j)=>{if(!confirm(LL.deleteConfirm))return;await db.deleteJob(j.id);db.logAdminAction(user.name,"Delete",j.id,`${j.model} ${j.imei||j.serial||""}`);
+    const it=inv.find(i=>(j.imei&&i.imei===j.imei)||(j.serial&&i.serial&&i.serial.toUpperCase()===j.serial.toUpperCase()));if(!it)return;
+    if(j.component==="housing"&&j.remark){const step=j.remark.replace("Housing: ","");const cur=it.housingSteps||[];const next=cur.filter(s=>s!==step);const closingOpt=(()=>{const hs=subJobs.find(s=>s.tab==="housing"&&!s.name.toLowerCase().includes("servicing"));return hs&&hs.options.length?hs.options[hs.options.length-1]:null;})();const hasClosing=closingOpt&&next.includes(closingOpt);const status=next.length===0?"na":hasClosing?"serviced":"partial";await db.updateInvStatus(it._dbId,{cameraDetail:{...(it.cameraDetail||{}),housingStatus:status,housingSteps:next}});}
+    if(j.component==="glass"){const otherGlass=jobs.filter(x=>x.id!==j.id&&!x.deleted&&x.component==="glass"&&((j.imei&&x.imei===j.imei)||(j.serial&&x.serial&&x.serial.toUpperCase()===j.serial.toUpperCase())));if(otherGlass.length===0)await db.updateInvStatus(it._dbId,{glassStatus:"na"});}
+    if(j.component==="camera"){const otherCam=jobs.filter(x=>x.id!==j.id&&!x.deleted&&x.component==="camera"&&((j.imei&&x.imei===j.imei)||(j.serial&&x.serial&&x.serial.toUpperCase()===j.serial.toUpperCase())));if(otherCam.length===0)await db.updateInvStatus(it._dbId,{cameraStatus:"na"});}
+  };
+  const handleMarkReturned=(j,fix)=>{db.setJobStatus(j.id,"qc-pending",{outsourceReason:(j.outsourceReason?j.outsourceReason+" | ":"")+"Returned: "+(fix||"received back"),qcBy:user.name});db.logAdminAction(user.name,"Mark Returned",j.id,`${j.model} from ${j.outsourceTo} — ${fix||"received back"}`);try{db.addNotif(j.techId,"outsource","Outsource Returned",`${j.model} returned from ${j.outsourceTo}`);}catch(e){}};
+  const handleRevert=(j,newStatus)=>{db.setJobStatus(j.id,newStatus,{});db.logAdminAction(user.name,"Revert Status",j.id,`${j.model} ${j.status} → ${newStatus}`);};
+  const handleBulkQC=async()=>{
+    if(bqMode==="redo"&&!bqReason){setBqMsg("❌ "+LL.redoReason);return;}
+    const imeis=bqIMEIs.split("\n").map(s=>s.replace(/\D/g,"").trim()).filter(s=>s.length===15);
+    if(!imeis.length){setBqMsg("No valid 15-digit IMEIs found");return;}
+    let matched=0,notFound=[];
+    for(const imei of imeis){
+      // Try to find in qc-pending jobs first
+      let j=qcP.find(x=>x.imei===imei);
+      // If not found in jobs, check qcReady inventory (units with all services done but no qc-pending job)
+      if(!j){
+        const it=qcReady.find(x=>x.imei===imei);
+        if(it){
+          // Find latest repair job for this unit, or create one
+          const uj=getUJ(it.imei,it.serial,jobs).filter(x=>x.component==="full"||!x.component);
+          const latestRepair=uj.sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn))[0];
+          if(bqMode==="pass"){
+            if(latestRepair){await db.setJobStatus(latestRepair.id,"completed",{qcBy:user.name});}
+            await stampQcByUnit(it.imei,it.serial,user.name);
+            const slEntries=[{type:"qc_pass",techId:user.id,techName:user.name,at:new Date().toISOString()}];
+            if(bqDetail)slEntries.push({type:"qc_remark",remark:bqDetail,techId:user.id,techName:user.name,at:new Date().toISOString()});
+            await db.updateInvStatus(it._dbId,{stepLog:slEntries});
+            db.logAdminAction(user.name,"Bulk QC Pass",latestRepair?.id||"",`${it.product} ${imei}`+(bqDetail?" | "+bqDetail:""));
+          }else{
+            const sl=(it.cameraDetail||{}).stepLog||[];const hClose=[...sl].reverse().find(s=>s.type==="housing"&&(s.step||"").includes("2nd"));const redoTech=hClose?.techId||uj.sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn))[0]?.techId||techs[0]?.id||user.id;
+            await db.createJob({techId:redoTech,model:it.product,storage:it.size,color:it.color,grade:it.grade||"",batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"Redo",subJobs:[],remark:"Redo: "+(bqReason||"")+(bqDetail?" — "+bqDetail:""),qty:1,status:"redo-flagged",dateDone:new Date().toISOString(),mode:"repair",component:"full",redoReason:bqReason||"",redoRemark:bqDetail||"",qcBy:user.name,redoSeen:false});
+            db.logAdminAction(user.name,"Bulk Redo","",`${it.product} ${imei} ${bqReason||""}`);
+          }
+          matched++;continue;
+        }
+        notFound.push(imei);continue;
+      }
+      if(bqMode==="pass"){
+        await db.setJobStatus(j.id,"completed",{qcBy:user.name});
+        await stampQcByUnit(j.imei,j.serial,user.name);
+        const it2=inv.find(i=>i.imei===imei);if(it2){const sl2=[{type:"qc_pass",techId:user.id,techName:user.name,at:new Date().toISOString()}];if(bqDetail)sl2.push({type:"qc_remark",remark:bqDetail,techId:user.id,techName:user.name,at:new Date().toISOString()});await db.updateInvStatus(it2._dbId,{stepLog:sl2});}
+        db.logAdminAction(user.name,"Bulk QC Pass",j.id,`${j.model} ${imei}`+(bqDetail?" | "+bqDetail:""));
+        if(j.jobType==="Redo"){const prev=jobs.filter(x=>x.id!==j.id&&x.status==="redo-flagged"&&x.imei===imei);for(const p of prev){await db.setJobStatus(p.id,"completed",{qcBy:user.name,redoRemark:(p.redoRemark?p.redoRemark+" | ":"")+"Redo resolved by "+(techs.find(t=>t.id===j.techId)?.name||j.techId)});}}
+      }else{
+        await db.setJobStatus(j.id,"redo-flagged",{redoReason:bqReason||"",redoRemark:bqDetail||"",qcBy:user.name,redoSeen:false});
+        db.logAdminAction(user.name,"Bulk Redo",j.id,`${j.model} ${imei} ${bqReason||""}`);
+        try{db.addNotif(j.techId,"redo","Redo Flagged",`${j.model} ${imei}: ${bqReason||""}`);}catch(e){}
+      }
+      matched++;
+    }
+    setBqMsg(`✅ ${matched} ${LL.bulkProcessed}${notFound.length?` | ${notFound.length} ${LL.noMatch}: ${notFound.join(", ")}`:""}`);
+    setBqIMEIs("");
+  };
+  const LL=LANG[lang];
+  const[tab,setTab]=useState("dashboard");const[sAT,setSAT]=useState(false);const[sAS,setSAS]=useState(false);const[eS,setES]=useState(null);const[nT,setNT]=useState({id:"",name:"",password:"",role:"tech"});const[nS,setNS]=useState({name:"",cn:"",options:"",tab:"repair"});const[eSD,setESD]=useState({name:"",cn:"",options:"",tab:"repair"});const[sR,setSR]=useState(false);const[fD1,setFD1]=useState(td());const[fD2,setFD2]=useState(td());const[fT,setFT]=useState("all");const[fSt,setFSt]=useState("all");const[uM,setUM]=useState("");const[batchWH,setBatchWH]=useState("");const[iB,setIB]=useState("all");const[iS,setIS]=useState("");const[iSt,setISt]=useState("all");const[dv,setDv]=useState(null);const[unitDet,setUnitDet]=useState(null);const[bulkMode,setBulkMode]=useState(false);const[bulkQ,setBulkQ]=useState("");const[resetPwTech,setResetPwTech]=useState(null);const[newPw,setNewPw]=useState("");const[editNameTech,setEditNameTech]=useState(null);const[editName,setEditName]=useState("");
+  const pJ=jobs.filter(j=>j.mode!=="service");const sJ=jobs.filter(j=>j.mode==="service");const qcP=pJ.filter(j=>j.status==="qc-pending");
+  const tJ=jobs.filter(j=>j.dateIn.startsWith(td()));
+  const[svcTab,setSvcTab]=useState("housing");const[svcD1,setSvcD1]=useState(td());const[svcD2,setSvcD2]=useState(td());const[commD1,setCommD1]=useState(td());const[commD2,setCommD2]=useState(td());const[procSearch,setProcSearch]=useState("");const[procBatch,setProcBatch]=useState("all");const[procStatus,setProcStatus]=useState("all");
+  const tJUnits=(()=>{const units=new Set();tJ.forEach(j=>{const k=j.imei||j.serial;if(k)units.add(k);});return units.size;})();
+  const tSvcUnits=(()=>{const units=new Set();sJ.filter(j=>j.dateIn.startsWith(td())).forEach(j=>{const k=j.imei||j.serial;if(k)units.add(k);});return units.size;})();
+  const fJ=jobs.filter(j=>{if(j.deleted)return false;const matchDate=inRange(j.dateIn,fD1,fD2)||(j.dateDone&&inRange(j.dateDone,fD1,fD2));return matchDate&&(fT==="all"||j.techId===fT)&&(fSt==="all"||j.status===fSt);});
+  const batches=[...new Set(inv.map(i=>i.batchId))];
+  const handleAddTech=()=>{if(!nT.name||!nT.password)return;db.addTech({id:nT.id||db.nextTechId(),name:nT.name,password:nT.password,role:nT.role||"tech"});setNT({id:"",name:"",password:"",role:"tech"});setSAT(false);};
+  const handleResetPw=()=>{if(!newPw||!resetPwTech)return;db.updateTechPassword(resetPwTech,newPw);setResetPwTech(null);setNewPw("");};
+  const handleEditName=()=>{if(!editName.trim()||!editNameTech)return;db.updateTechName(editNameTech,editName.trim());setEditNameTech(null);setEditName("");};
+  const stampQcByUnit=async(imei,serial,qcBy)=>{const unitJobs=jobs.filter(j=>(imei&&j.imei===imei)||(serial&&j.serial&&j.serial.toUpperCase()===serial.toUpperCase()));for(const j of unitJobs){if(!j.qcBy)await db.updateJob(j.id,{qcBy});}};
+  const handleQCPass=async(j)=>{await db.setJobStatus(j.id,"completed",{qcBy:user.name});await stampQcByUnit(j.imei,j.serial,user.name);db.logAdminAction(user.name,"QC Pass",j.id,`${j.model} ${j.imei||j.serial||""}`);try{db.addNotif(j.techId,"qc-pass","QC Passed",`${j.model} ${j.imei||j.serial||""} passed QC`);}catch(e){}if(j.jobType==="Redo"&&(j.imei||j.serial)){const prev=jobs.filter(x=>x.id!==j.id&&x.status==="redo-flagged"&&((j.imei&&x.imei===j.imei)||(j.serial&&x.serial&&x.serial.toUpperCase()===j.serial.toUpperCase())));for(const p of prev){await db.setJobStatus(p.id,"completed",{qcBy:user.name,redoRemark:(p.redoRemark?p.redoRemark+" | ":"")+"Redo resolved by "+(techs.find(t=>t.id===j.techId)?.name||j.techId)});db.logAdminAction(user.name,"Auto-close redo",p.id,`Resolved by ${techs.find(t=>t.id===j.techId)?.name||j.techId}`);}}};
+  const handleAddSJ=()=>{if(!nS.name.trim())return;db.addSubJob({name:nS.name.trim(),cn:nS.cn.trim(),options:nS.options.split(",").map(s=>s.trim()).filter(Boolean),tab:nS.tab||"repair"});setNS({name:"",cn:"",options:"",tab:"repair"});setSAS(false);};
+  const handleSaveSJ=()=>{if(!eSD.name.trim()||eS===null)return;db.updateSubJob(eS,{name:eSD.name.trim(),cn:eSD.cn.trim(),options:eSD.options.split(",").map(s=>s.trim()).filter(Boolean),tab:eSD.tab||"repair"});setES(null);};
+  const handleCSV=async(e)=>{const f=e.target.files[0];if(!f)return;const isXL=f.name.endsWith(".xlsx")||f.name.endsWith(".xls");
+    const whId=batchWH?parseInt(batchWH):null;
+    if(isXL){const p=await pXLSX(f);if(!p||!p.items.length){setUM("❌ Invalid file");return;}db.uploadBatch(p.batchId,p.items,whId);setUM(`✅ ${p.batchId}: ${p.items.length} items`);try{db.addNotif("all","batch","New Batch Uploaded",`${p.batchId}: ${p.items.length} items`);}catch(e){}}
+    else{const r=new FileReader();r.onload=ev=>{const p=pCSV(ev.target.result);if(!p||!p.items.length){setUM("❌ Invalid file");return;}db.uploadBatch(p.batchId,p.items,whId);setUM(`✅ ${p.batchId}: ${p.items.length} items`);try{db.addNotif("all","batch","New Batch Uploaded",`${p.batchId}: ${p.items.length} items`);}catch(e){}};r.readAsText(f);}
+    e.target.value="";};
+  const bulkTerms=bulkMode?bulkQ.split("\n").map(s=>s.trim().toLowerCase()).filter(Boolean):[];
+  const[showDelivered,setShowDelivered]=useState(false);
+  const deliveredIds=useMemo(()=>{const ids=new Set();(orderItems||[]).forEach(oi=>{if(oi.delivered)ids.add(oi.inventory_id);});return ids;},[orderItems]);
+  const invList=(iB==="all"?inv:inv.filter(i=>i.batchId===iB)).filter(i=>{if(!showDelivered&&deliveredIds.has(i._dbId))return false;if(bulkMode&&bulkTerms.length>0)return bulkTerms.some(q=>(i.imei&&i.imei.includes(q))||(i.serial&&i.serial.toLowerCase().includes(q))||(i.codeId&&i.codeId.toLowerCase().includes(q)));if(!iS)return true;const q=iS.toLowerCase();return(i.imei&&i.imei.includes(q))||(i.serial&&i.serial.toLowerCase().includes(q))||(i.product&&i.product.toLowerCase().includes(q))||(i.codeId&&i.codeId.toLowerCase().includes(q));}).filter(i=>{if(iSt==="all")return true;if(iSt==="delivered")return deliveredIds.has(i._dbId);const uj=getUJ(i.imei,i.serial,jobs);const latest=uj.sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn))[0];return latest?latest.status===iSt:iSt==="na";});
+  const[rrMap,setRrMap]=useState({});const[rmMap,setRmMap]=useState({});const[rrSJ,setRrSJ]=useState({});const[rrTypes,setRrTypes]=useState({});const[qcRemarkMap,setQcRemarkMap]=useState({});
+  const[osMap,setOsMap]=useState({});const[osReason,setOsReason]=useState({});const[rcvMap,setRcvMap]=useState({});const[showAddRH,setShowAddRH]=useState(false);const[editRH,setEditRH]=useState(null);const[rhForm,setRhForm]=useState({name:"",contact:"",address:"",notes:""});
+  const[bqMode,setBqMode]=useState("pass");const[bqIMEIs,setBqIMEIs]=useState("");const[bqReason,setBqReason]=useState("");const[bqDetail,setBqDetail]=useState("");const[bqMsg,setBqMsg]=useState("");
+  const[chatMsg,setChatMsg]=useState("");const[chatRef,setChatRef]=useState("");
+  const[rptRange,setRptRange]=useState("thisMonth");const[rptD1,setRptD1]=useState(td());const[rptD2,setRptD2]=useState(td());const[rptData,setRptData]=useState(null);
+  const[showAddRC,setShowAddRC]=useState(false);const[editRC,setEditRC]=useState(null);const[rcForm,setRcForm]=useState({code:"",meaning_en:"",meaning_cn:""});
+  const outsourcedJobs=jobs.filter(j=>j.status==="outsourced");const directSellJobs=jobs.filter(j=>j.status==="direct-sell");
+  const[redoSvcUnit,setRedoSvcUnit]=useState(null);const[redoSvcType,setRedoSvcType]=useState("");const[redoSvcReason,setRedoSvcReason]=useState("");
+  // Buyer Orders state
+  const[showBuyerMod,setShowBuyerMod]=useState(false);const[editBuyerData,setEditBuyerData]=useState(null);const[buyerForm,setBuyerForm]=useState({name:"",contact:"",address:"",terms:"",notes:""});
+  const[showOrderMod,setShowOrderMod]=useState(false);const[orderForm,setOrderForm]=useState({buyer_id:"",order_date:td(),delivery_date:"",priority:"normal",notes:"",scopeGlass:true,scopeCamera:true,scopeHousing:true});
+  const[expandedOrder,setExpandedOrder]=useState(null);const[showLinkMod,setShowLinkMod]=useState(null);const[linkBatch,setLinkBatch]=useState("all");const[linkChecked,setLinkChecked]=useState({});const[linkPrice,setLinkPrice]=useState("");const[linkBulkQ,setLinkBulkQ]=useState("");const[oiChecked,setOiChecked]=useState({});const[bulkMoveFrom,setBulkMoveFrom]=useState(null);const[bulkMoveQ,setBulkMoveQ]=useState("");
+  const handleServiceRedo=async()=>{if(!redoSvcUnit||!redoSvcReason)return;const it=redoSvcUnit;const type=redoSvcType;const cur=it.cameraDetail||{};const redoEntry={type,reason:redoSvcReason,flaggedBy:user.name,flaggedAt:new Date().toISOString()};const newDetail={...cur,redoHistory:[...(cur.redoHistory||[]),redoEntry],stepLog:(cur.stepLog||[]).filter(s=>!s.type.startsWith(type==="glass"?"glass":"camera"))};const sf=type==="glass"?"glassStatus":"cameraStatus";const redoVal=type==="camera"?"washing":"service";await db.updateInvStatus(it._dbId,{[sf]:redoVal,cameraDetail:newDetail});await db.logAdminAction(user.name,"Redo "+type,"",(it.imei||"")+": "+redoSvcReason);setRedoSvcUnit(null);setRedoSvcReason("");};
+  const tQC=(()=>{const qcJobs=jobs.filter(j=>j.status==="completed"&&j.qcBy&&j.dateDone&&j.dateDone.startsWith(td())&&!j.deleted);const seen=new Set();return qcJobs.filter(j=>{const k=j.imei||j.serial||j.id;if(seen.has(k))return false;seen.add(k);return true;});})();const tRedoJobs=pJ.filter(j=>j.status==="redo-flagged");const tRedoInv=inv.filter(i=>{if(!i.redoHistory||!i.redoHistory.length)return false;const hasGlassRedo=i.redoHistory.some(r=>r.type==="glass")&&i.glassStatus!=="serviced";const hasCamRedo=i.redoHistory.some(r=>r.type==="camera")&&i.cameraStatus!=="serviced";const hasHousingRedo=i.redoHistory.some(r=>r.type==="housing")&&i.housingStatus!=="serviced";return hasGlassRedo||hasCamRedo||hasHousingRedo;});const tRedo=[...tRedoJobs];tRedoInv.forEach(it=>{if(!tRedoJobs.some(j=>(it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())))tRedo.push(it);});const tSvc=sJ.filter(j=>j.dateIn.startsWith(td()));
+  const qcReady=inv.filter(it=>{if(deliveredIds.has(it._dbId))return false;const hasQcPass=(it.stepLog||[]).some(s=>s.type==="qc_pass");if(hasQcPass)return false;const uj=getUJ(it.imei,it.serial,jobs);const hasQcPending=uj.some(j=>j.status==="qc-pending"&&j.component==="full"&&!j.deleted);if(!hasQcPending)return false;const repairJobs=uj.filter(j=>j.component==="full"||!j.component);const latest=repairJobs.sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn))[0];if(latest&&latest.status==="completed")return false;if(latest&&latest.status==="direct-sell")return false;if(latest&&latest.status==="redo-flagged")return false;if(latest&&latest.status==="outsourced")return false;return true;});
+  const lcdSJA=subJobs.find(s=>s.tab==="glass"&&s.name.toLowerCase().includes("lcd"));const lcdOptsA=lcdSJA?lcdSJA.options:[];const lcdEmojis=["🔴","🟠","🟣","🩷","🟤","🔵"];
+  const lcdFaultUnits=inv.filter(i=>i.lcdFault);const glassServiced=inv.filter(i=>i.glassStatus==="serviced");
+  const getLcdEmoji=(fault)=>{const ci=lcdOptsA.indexOf(fault);return ci>=0?lcdEmojis[ci%lcdEmojis.length]:"🔴";};
+  const[tdFT,setTdFT]=useState("all");const[tdFSt,setTdFSt]=useState("all");
+  const tdFiltered=tJ.filter(j=>(tdFT==="all"||j.techId===tdFT)&&(tdFSt==="all"||j.status===tdFSt));
+  // Days badge
+  const DB=({j})=>{if(j.status==="completed"||j.dateDone)return null;const d=daysOpen(j.dateIn);if(d<1)return null;return <span style={{padding:"1px 4px",borderRadius:3,fontSize:9,fontWeight:700,background:d>=3?"rgba(239,68,68,0.15)":"rgba(245,158,11,0.15)",color:d>=3?T.danger:T.warning}}>{d} {LL.daysWith}</span>;};
+  // Issue/Parts badges
+  const IB=({j})=><>{j.qcBy&&<div style={{fontSize:10,color:T.success,padding:"2px 5px",background:"rgba(16,185,129,0.06)",borderRadius:3,marginBottom:2}}>✓ {LL.qcByLabel}: {j.qcBy}</div>}{j.extraIssues&&<div style={{fontSize:10,color:T.warning,padding:"2px 5px",background:"rgba(245,158,11,0.06)",borderRadius:3,marginBottom:2}}>🔧 {j.extraIssues}</div>}{j.waitingParts&&<div style={{fontSize:10,color:T.danger,fontWeight:600,padding:"2px 5px",background:"rgba(239,68,68,0.06)",borderRadius:3,marginBottom:2}}>⏳ {LL.waitingParts}{j.partsDetail?`: ${j.partsDetail}`:""}</div>}</>;
 
-      {/* Footer */}
-      <div style={{padding:"16px 20px",textAlign:"center",borderTop:`1px solid ${T.border}`,marginTop:40}}>
-        <div style={{display:"inline-flex",alignItems:"center",gap:6}}>
-          <AtomLogo size={16}/>
-          <span style={{fontSize:10,color:T.dim,fontWeight:600,letterSpacing:"1px"}}>KIS REPAIR & WHOLESALES</span>
+  const DetList=({list})=>list.sort((a,b)=>new Date(b.dateDone||b.dateIn)-new Date(a.dateDone||a.dateIn)).slice(0,60).map(j=>{const tech=techs.find(t=>t.id===j.techId);const invIt=inv.find(i=>(j.imei&&i.imei===j.imei)||(j.serial&&i.serial&&i.serial.toUpperCase()===j.serial.toUpperCase()));return (<div key={j.id} style={{padding:"7px 0",borderBottom:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",gap:5,flexWrap:"wrap"}}><div><div style={{display:"flex",gap:3,marginBottom:2,flexWrap:"wrap"}}><TB t={j.jobType}/><SB s={j.status} lang={lang} qcBy={j.qcBy} jobType={j.jobType}/>{invIt?.codeId&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:10,fontWeight:700,background:"rgba(245,158,11,0.15)",color:T.warning}}>{invIt.codeId}</span>}{j.mode==="service"&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:8,background:"rgba(139,92,246,0.1)",color:T.purple}}>SVC</span>}{j.component==="glass"&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:8,fontWeight:700,background:"rgba(201,168,76,0.15)",color:T.accent}}>🔲 Glass</span>}{j.component==="camera"&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:8,fontWeight:700,background:"rgba(139,92,246,0.15)",color:T.purple}}>📷 Camera</span>}{j.component==="housing"&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:8,fontWeight:700,background:"rgba(245,158,11,0.15)",color:T.warning}}>🏠 Housing</span>}{invIt&&j.component==="glass"&&<span style={{fontSize:12}}>{invIt.lcdFault?getLcdEmoji(invIt.lcdFault):"🟢"}</span>}<DB j={j}/></div><div style={{color:T.text,fontSize:12,fontWeight:600}}>{invIt?.codeId&&<span style={{color:T.warning,marginRight:4}}>{invIt.codeId}</span>}{j.model}{j.storage?` ${j.storage}`:""}{j.qty>1?` ×${j.qty}`:""}</div><div style={{fontSize:10,fontFamily:"monospace",color:T.muted}}>{j.imei||j.serial||"—"}</div><SJBadges sjs={j.subJobs} lang={lang}/>{j.remark&&<div style={{fontSize:10,color:T.muted}}>{j.remark}</div>}<IB j={j}/>{j.redoReason&&<div style={{fontSize:11,color:T.danger}}>⚠ {j.redoReason}{j.redoRemark?` — ${j.redoRemark}`:""}</div>}</div><div style={{textAlign:"right",display:"flex",flexDirection:"column",alignItems:"flex-end",gap:2}}><div style={{fontSize:11,color:T.text}}>{tech?.name}</div><div style={{fontSize:10,color:T.dim}}>{j.dateDone?fD(j.dateDone):fD(j.dateIn)}</div><button onClick={()=>{handleDelete(j);}} style={{...dB,padding:"2px 5px",fontSize:9}}>{Ic.del}</button></div></div>);});
+  const procUnits=inv.filter(it=>!deliveredIds.has(it._dbId)).map(it=>{const uj=getUJ(it.imei,it.serial,jobs);const firstJob=uj.sort((a,b)=>new Date(a.dateIn)-new Date(b.dateIn))[0];const days=firstJob?Math.floor((new Date()-new Date(firstJob.dateIn))/(1000*60*60*24)):0;const repJ=uj.filter(j=>j.component==="full"||!j.component);const latRep=repJ.sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn))[0];const rSt=latRep?latRep.status:"na";const gSt=it.glassStatus;const cSt=it.cameraStatus;const hSt=it.housingStatus;const allDone=gSt==="serviced"&&cSt==="serviced"&&hSt==="serviced"&&(rSt==="completed"||rSt==="qc-pending"||rSt==="na");const hasWork=uj.length>0||gSt!=="na"||cSt!=="na"||hSt!=="na"||(it.glassServicing||[]).length>0||(it.lcdFaults||[]).length>0||it.lcdFault;return{...it,days,rSt,gSt,cSt,hSt,allDone,hasWork,latRep,uj};}).filter(u=>u.hasWork);
+  const procReady=procUnits.filter(u=>u.allDone).length;const procWorking=procUnits.filter(u=>!u.allDone).length;
+  const mainTabs=[{k:"dashboard",l:LL.dashboard},{k:"processing",l:`${LL.processing}(${procWorking})`,b:procWorking},{k:"qc",l:`QC(${qcReady.length})`,b:qcReady.length},{k:"jobs",l:LL.jobs},{k:"search",l:LL.search}];
+  const isSuperAdmin=user.role==="superadmin";
+  const dropMenus=[
+    {label:LL.inventory,items:[{k:"inventory",l:LL.inventory},...(PARTS_ENABLED&&isSuperAdmin?[{k:"parts",l:LL.partsInvTitle}]:[]),...(isSuperAdmin?[{k:"batch",l:LL.batch}]:[{k:"batch",l:LL.batch}])]},
+    {label:LL.ordersTitle,items:[...(isSuperAdmin?[{k:"buyers",l:LL.buyersTitle}]:[]),{k:"buyerorders",l:LL.ordersTitle},{k:"deliveries",l:LL.deliveriesTitle},...(isSuperAdmin?[{k:"stockreport",l:LL.stockReport}]:[])]},
+    ...(isSuperAdmin?[{label:"Settings",items:[{k:"techs",l:LL.techs},{k:"subjobs",l:LL.subjobs},{k:"remarkcodes",l:LL.remarkCodes},{k:"commrates",l:LL.commRatesShort},{k:"commreport",l:LL.commReportShort}]}]:[]),
+    {label:"More",items:[{k:"feedback",l:`${LL.feedbackTitle}(${(feedback||[]).filter(f=>f.status!=="resolved").length})`,b:(feedback||[]).filter(f=>f.status!=="resolved").length},{k:"chat",l:LL.chatLabel},...(isSuperAdmin?[{k:"activity",l:LL.activity},{k:"reports",l:LL.reportsLabel}]:[])]}
+  ];
+  const allTabs=[...mainTabs,...dropMenus.flatMap(d=>d.items)];
+  const[openMenu,setOpenMenu]=useState(null);
+  const tBtn=(t)=><button key={t.k} onClick={()=>{setTab(t.k);setOpenMenu(null);}} style={{...gB,background:tab===t.k?"rgba(201,168,76,0.12)":"transparent",color:tab===t.k?T.accent:T.dim,borderColor:tab===t.k?"rgba(201,168,76,0.3)":T.border,fontSize:11,whiteSpace:"nowrap",padding:"5px 8px",position:"relative"}}>{t.l}{t.b>0&&<span style={{marginLeft:4,padding:"1px 5px",borderRadius:8,background:T.qcO,color:"#fff",fontSize:9,fontWeight:700}}>{t.b}</span>}</button>;
+  return (<div><style>{mCSS}</style>
+    <div className="fxTb" style={{display:"flex",gap:3,padding:"7px 16px",background:T.bg,borderBottom:`1px solid ${T.border}`,flexWrap:"wrap",alignItems:"center",position:"sticky",top:0,zIndex:40}}>
+      {mainTabs.map(t=>tBtn(t))}
+      {dropMenus.map(d=>{const isActive=d.items.some(t=>t.k===tab);const isOpen=openMenu===d.label;return <div key={d.label} style={{position:"relative"}}>
+        <button onClick={()=>setOpenMenu(isOpen?null:d.label)} style={{...gB,background:isActive?"rgba(201,168,76,0.12)":"transparent",color:isActive?T.accent:T.dim,borderColor:isActive?"rgba(201,168,76,0.3)":T.border,fontSize:11,padding:"5px 8px",whiteSpace:"nowrap"}}>{d.label} {isOpen?"▲":"▼"}{d.items.some(t=>t.b>0)&&<span style={{marginLeft:3,width:6,height:6,borderRadius:"50%",background:T.qcO,display:"inline-block"}}/>}</button>
+        {isOpen&&<div style={{position:"absolute",top:"100%",left:0,zIndex:50,background:T.card,border:`1px solid ${T.border}`,borderRadius:8,padding:4,minWidth:160,boxShadow:"0 8px 24px rgba(0,0,0,0.3)",display:"flex",flexDirection:"column",gap:2}}>
+          {d.items.map(t=>tBtn(t))}
+        </div>}
+      </div>;})}
+    </div>
+    {openMenu&&<div onClick={()=>setOpenMenu(null)} style={{position:"fixed",inset:0,zIndex:39}}/>}
+    <button onClick={()=>{window.scrollTo({top:0,behavior:"smooth"});document.querySelectorAll('[style*="max-height"]').forEach(el=>{if(el.scrollTop>0)el.scrollTo({top:0,behavior:"smooth"});});}} style={{position:"fixed",bottom:20,right:20,zIndex:99,width:44,height:44,borderRadius:"50%",background:T.accent,color:"#fff",border:"none",cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 4px 12px rgba(0,0,0,0.3)"}}>↑</button>
+    <div className="fxM" style={{padding:18,maxWidth:1200,margin:"0 auto"}}>
+
+      {tab==="dashboard"&&<>
+        {/* Active Orders */}
+        {(()=>{const activeOrders=(buyerOrders||[]).filter(o=>o.status!=="delivered");if(!activeOrders.length)return null;return <div style={{marginBottom:14}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:0}}>📦 {LL.activeOrders||"Active Transfers"} ({activeOrders.length})</h3><button onClick={()=>setTab("buyerorders")} style={{...gB,padding:"3px 8px",fontSize:10}}>{LL.viewAll||"View All"}</button></div>
+          <div style={{display:"grid",gap:4}}>{activeOrders.sort((a,b)=>{const p={urgent:0,rush:1,normal:2};return (p[a.priority]||2)-(p[b.priority]||2);}).map(o=>{const buyer=(buyers||[]).find(b=>b.id===o.buyer_id);const oItems=(orderItems||[]).filter(oi=>oi.order_id===o.id);const sm=(o.notes||"").match(/^SCOPE:([^|]*)\|/);const sc=sm?sm[1].split(","):["glass","camera","housing"];const doneCount=oItems.filter(oi=>{const it=inv.find(i=>i._dbId===oi.inventory_id);if(!it)return false;const gOk=!sc.includes("glass")||it.glassStatus==="serviced";const cOk=!sc.includes("camera")||it.cameraStatus==="serviced";const hOk=!sc.includes("housing")||it.housingStatus==="serviced";return gOk&&cOk&&hOk;}).length;const pct=oItems.length>0?Math.round(doneCount/oItems.length*100):0;const pColor=o.priority==="urgent"?T.danger:o.priority==="rush"?T.warning:T.accent;
+            return <div key={o.id} onClick={()=>{setTab("buyerorders");setExpandedOrder(o.id);}} style={{background:T.card,borderRadius:7,padding:"8px 12px",border:`1px solid ${T.border}`,borderLeft:`3px solid ${pColor}`,cursor:"pointer"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                  {o.priority!=="normal"&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:700,background:`${pColor}18`,color:pColor}}>{o.priority==="urgent"?"URGENT":"RUSH"}</span>}
+                  <span style={{color:T.accent,fontWeight:700,fontSize:12}}>{o.order_no}</span>
+                  <span style={{color:T.text,fontSize:11}}>{buyer?.name||"—"}</span>
+                </div>
+                <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                  <span style={{fontSize:11,fontWeight:700,color:pct===100?T.success:T.muted}}>{doneCount}/{oItems.length}</span>
+                  {o.delivery_date&&<span style={{fontSize:10,color:T.dim}}>📅 {o.delivery_date}</span>}
+                </div>
+              </div>
+              <div style={{height:4,borderRadius:2,background:"rgba(255,255,255,0.06)",marginTop:5}}><div style={{height:"100%",width:pct+"%",borderRadius:2,background:pct===100?T.success:pColor,transition:"width 0.3s"}}/></div>
+            </div>;})}</div>
+        </div>;})()}
+        <div className="fxS fxSG" style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:14}}><SC icon={Ic.bar} label={LL.today} value={tJUnits} color={T.accent} onClick={()=>setDv("today")}/><SC icon={Ic.chk} label={LL.qcPassRec} value={tQC.length} color={T.success} onClick={()=>setDv("qcpass")}/><SC icon={Ic.qc} label={LL.qcPending} value={qcReady.length} color={T.qcO} onClick={()=>setTab("qc")}/><SC icon={Ic.rdo} label={LL.redo} value={tRedo.length} color={T.danger} onClick={()=>setDv("redolist")}/><SC icon={Ic.svc} label={LL.service} value={tSvcUnits} color={T.purple} onClick={()=>setDv("svcoverview")}/>{outsourcedJobs.length>0&&<SC icon={Ic.dl} label={LL.outsourceTab} value={outsourcedJobs.length} color={T.amber} onClick={()=>setTab("outsource")}/>}{directSellJobs.length>0&&<SC icon={Ic.tri} label={LL.directSell} value={directSellJobs.length} color={T.danger} onClick={()=>setTab("directsell")}/>}<SC icon={Ic.wrn} label={LL.lcdFault} value={lcdFaultUnits.length} color={T.danger} onClick={()=>setDv("lcd")}/><SC icon={Ic.inv} label={LL.inventory} value={inv.length} color={T.dim} onClick={()=>setTab("inventory")}/></div>
+        {dv==="today"&&<Mod title={`${LL.todayJobs} (${tJ.length})`} onClose={()=>setDv(null)} w="680px"><div style={{display:"flex",gap:5,marginBottom:10,flexWrap:"wrap"}}><select value={tdFT} onChange={e=>setTdFT(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px"}}><option value="all">{LL.allTechs}</option>{techs.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select><StatusFilter value={tdFSt} onChange={setTdFSt} lang={lang}/></div><div style={{color:T.dim,fontSize:11,marginBottom:6}}>{tdFiltered.length} jobs</div><DetList list={tdFiltered}/></Mod>}
+        {dv&&dv!=="today"&&dv!=="sentout"&&dv!=="glass"&&dv!=="lcd"&&dv!=="redolist"&&(()=>{const qcList=dv==="qcpass"?tQC:sJ;return <Mod title={dv==="qcpass"?`${LL.qcPassRec} (${qcList.length})`:LL.svcRec+" ("+sJ.length+")"} onClose={()=>setDv(null)} w="640px"><DetList list={qcList}/></Mod>;})()}
+        {dv==="redolist"&&<Mod title={LL.redoRec+" ("+tRedo.length+")"} onClose={()=>setDv(null)} w="640px">
+          {tRedoJobs.length>0&&<><h4 style={{color:T.danger,fontSize:13,fontWeight:700,margin:"0 0 8px"}}>{LL.redoFlaggedJobs} ({tRedoJobs.length})</h4><DetList list={tRedoJobs}/></>}
+          {(()=>{const glassRedo=tRedoInv.filter(i=>i.redoHistory.some(r=>r.type==="glass")&&i.glassStatus!=="serviced");const camRedo=tRedoInv.filter(i=>i.redoHistory.some(r=>r.type==="camera")&&i.cameraStatus!=="serviced");const housingRedo=tRedoInv.filter(i=>i.redoHistory.some(r=>r.type==="housing")&&i.housingStatus!=="serviced");const renderList=(items,label,bg,color)=>items.length>0&&<><h4 style={{color,fontSize:13,fontWeight:700,margin:"10px 0 6px"}}>{label} ({items.length})</h4><div style={{display:"grid",gap:4}}>{items.map(it=><div key={it._dbId} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",background:T.card,borderRadius:6,border:"1px solid "+T.border,borderLeft:"3px solid "+color}}>
+            <span style={{color:T.warning,fontWeight:700,fontSize:12,minWidth:50}}>{it.grade||"-"}</span>
+            <span style={{color:T.text,fontSize:11,flex:1}}>{it.product}{it.size?" "+it.size:""}{it.color?" "+it.color:""}{it.conditionRemark?" — "+it.conditionRemark:""}</span>
+            <span style={{fontSize:10,color:T.dim}}>{it.redoHistory.filter(r=>r.type===label.toLowerCase().replace("redo ","")).slice(-1).map(r=>r.reason).join("")}</span>
+          </div>)}</div></>;return <>{renderList(glassRedo,LL.redoGlass,"rgba(201,168,76,0.15)",T.accent)}{renderList(camRedo,LL.redoCam,"rgba(139,92,246,0.15)",T.purple)}{renderList(housingRedo,LL.redoHousing,"rgba(245,158,11,0.15)",T.warning)}</>;})()}
+          {tRedo.length===0&&<div style={{textAlign:"center",padding:20,color:T.dim}}>{LL.noRedo}</div>}
+        </Mod>}
+        {dv==="svcoverview"&&(()=>{
+          const svcJobs=sJ.filter(j=>j.dateDone&&inRange(j.dateDone,svcD1,svcD2));
+          const svcImeis=new Set();svcJobs.forEach(j=>{const k=j.imei||j.serial;if(k)svcImeis.add(k);});
+          const svcUnitsFiltered=inv.filter(i=>svcImeis.has(i.imei)||svcImeis.has(i.serial));
+          const hJobs=svcJobs.filter(j=>j.component==="housing");const hImeis=new Set();hJobs.forEach(j=>{const k=j.imei||j.serial;if(k)hImeis.add(k);});
+          const hDone=inv.filter(i=>i.housingStatus==="serviced"&&(hImeis.has(i.imei)||hImeis.has(i.serial)));
+          const hPartial=inv.filter(i=>i.housingStatus==="partial"&&(hImeis.has(i.imei)||hImeis.has(i.serial)));
+          const gJobs=svcJobs.filter(j=>j.component==="glass");const gImeis=new Set();gJobs.forEach(j=>{const k=j.imei||j.serial;if(k)gImeis.add(k);});
+          const gDone=inv.filter(i=>i.glassStatus==="serviced"&&(gImeis.has(i.imei)||gImeis.has(i.serial)));
+          const gPending=inv.filter(i=>i.glassStatus!=="serviced"&&(gImeis.has(i.imei)||gImeis.has(i.serial)));
+          const cJobs=svcJobs.filter(j=>j.component==="camera");const cImeis=new Set();cJobs.forEach(j=>{const k=j.imei||j.serial;if(k)cImeis.add(k);});
+          const cDone=inv.filter(i=>i.cameraStatus==="serviced"&&(cImeis.has(i.imei)||cImeis.has(i.serial)));
+          const cWash=inv.filter(i=>i.cameraStatus==="washing"&&(cImeis.has(i.imei)||cImeis.has(i.serial)));
+          return <Mod title={`${LL.service} — ${svcUnitsFiltered.length} units`} onClose={()=>setDv(null)} w="700px">
+            <div style={{display:"flex",gap:4,marginBottom:10,alignItems:"center",flexWrap:"wrap"}}>
+              <input type="date" value={svcD1} onChange={e=>setSvcD1(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px"}}/>
+              <span style={{color:T.dim,fontSize:11}}>→</span>
+              <input type="date" value={svcD2} onChange={e=>setSvcD2(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px"}}/>
+              <button onClick={()=>{setSvcD1(td());setSvcD2(td());}} style={{...gB,padding:"4px 8px",fontSize:10}}>{LL.today}</button>
+            </div>
+            <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+              <div style={{flex:1,padding:10,borderRadius:6,background:"rgba(245,158,11,0.08)",textAlign:"center",border:`1px solid ${T.border}`}}><div style={{fontSize:18,fontWeight:800,color:T.warning}}>{hDone.length}</div><div style={{fontSize:10,color:T.dim}}>Housing Done</div><div style={{fontSize:9,color:T.muted}}>{hPartial.length} partial</div></div>
+              <div style={{flex:1,padding:10,borderRadius:6,background:"rgba(201,168,76,0.08)",textAlign:"center",border:`1px solid ${T.border}`}}><div style={{fontSize:18,fontWeight:800,color:T.accent}}>{gDone.length}</div><div style={{fontSize:10,color:T.dim}}>Glass Done</div><div style={{fontSize:9,color:T.muted}}>{gPending.length} pending</div></div>
+              <div style={{flex:1,padding:10,borderRadius:6,background:"rgba(139,92,246,0.08)",textAlign:"center",border:`1px solid ${T.border}`}}><div style={{fontSize:18,fontWeight:800,color:T.purple}}>{cDone.length}</div><div style={{fontSize:10,color:T.dim}}>Camera Done</div><div style={{fontSize:9,color:T.muted}}>{cWash.length} washing</div></div>
+            </div>
+            <div style={{display:"flex",gap:3,marginBottom:10}}>{[["housing","🏠 Housing",T.warning],["glass","🔲 Glass",T.accent],["camera","📷 Camera",T.purple]].map(([k,l,c])=><button key={k} onClick={()=>setSvcTab(k)} style={{...gB,padding:"6px 12px",fontSize:12,background:svcTab===k?`${c}18`:"transparent",color:svcTab===k?c:T.dim,borderColor:svcTab===k?c:T.border}}>{l}</button>)}</div>
+            {svcTab==="housing"&&<div style={{display:"grid",gap:3}}>{[...hDone,...hPartial].sort((a,b)=>(a.grade||"").localeCompare(b.grade||"")).map(it=>{const steps=it.housingSteps||[];return <div key={it._dbId} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 10px",background:T.card,borderRadius:6,border:`1px solid ${it.housingStatus==="serviced"?T.success:T.warning}`}}>
+              <span style={{color:T.warning,fontWeight:700,fontSize:12,minWidth:45}}>{it.grade||"—"}</span>
+              <span style={{color:T.text,fontSize:11,flex:1,minWidth:80}}>{it.product}{it.color?` · ${it.color}`:""}</span>
+              <span style={{fontSize:10,color:T.muted}}>{steps.join(", ")}</span>
+              <span style={{fontSize:12}}>{it.housingStatus==="serviced"?"✅":"☑️"}</span>
+            </div>;})}{hDone.length===0&&hPartial.length===0&&<div style={{color:T.dim,fontSize:11,textAlign:"center",padding:16}}>No housing work yet</div>}</div>}
+            {svcTab==="glass"&&<div style={{display:"grid",gap:3}}>{[...gDone,...gPending.filter(i=>i.glassStatus==="service")].sort((a,b)=>(a.grade||"").localeCompare(b.grade||"")).map(it=>{const svc=it.glassServicing||[];return <div key={it._dbId} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 10px",background:T.card,borderRadius:6,border:`1px solid ${it.glassStatus==="serviced"?T.success:T.border}`}}>
+              <span style={{color:T.warning,fontWeight:700,fontSize:12,minWidth:45}}>{it.grade||"—"}</span>
+              <span style={{color:T.text,fontSize:11,flex:1,minWidth:80}}>{it.product}{it.color?` · ${it.color}`:""}</span>
+              {svc.length>0&&<span style={{fontSize:9,color:T.purple}}>{svc.join(", ")}</span>}
+              {it.lcdFault&&<span style={{fontSize:12}}>{getLcdEmoji(it.lcdFault)}</span>}
+              {it.glassShadow&&<span style={{fontSize:9,color:T.warning}}>{it.glassShadow}</span>}
+              <span style={{fontSize:12}}>{it.glassStatus==="serviced"?"✅":"🟡"}</span>
+            </div>;})}{gDone.length===0&&<div style={{color:T.dim,fontSize:11,textAlign:"center",padding:16}}>No glass work yet</div>}</div>}
+            {svcTab==="camera"&&<div style={{display:"grid",gap:3}}>{[...cDone,...cWash].sort((a,b)=>(a.grade||"").localeCompare(b.grade||"")).map(it=>{ return <div key={it._dbId} style={{display:"flex",alignItems:"center",gap:6,padding:"6px 10px",background:T.card,borderRadius:6,border:`1px solid ${it.cameraStatus==="serviced"?T.success:it.cameraStatus==="washing"?T.purple:T.border}`}}>
+              <span style={{color:T.warning,fontWeight:700,fontSize:12,minWidth:45}}>{it.grade||"—"}</span>
+              <span style={{color:T.text,fontSize:11,flex:1,minWidth:80}}>{it.product}{it.color?` · ${it.color}`:""}</span>
+              {it.camPartsNote&&<span style={{fontSize:9,color:T.purple}}>{it.camPartsNote}</span>}
+              <span style={{fontSize:12}}>{it.cameraStatus==="serviced"?"✅":it.cameraStatus==="washing"?"🟣":"🟡"}</span>
+            </div>;})}{cDone.length===0&&cWash.length===0&&<div style={{color:T.dim,fontSize:11,textAlign:"center",padding:16}}>No camera work yet</div>}</div>}
+          </Mod>;
+        })()}
+        {dv==="lcd"&&<Mod title={`${LL.lcdFaults} (${lcdFaultUnits.length})`} onClose={()=>setDv(null)} w="640px"><div style={{marginBottom:10,display:"flex",gap:6,flexWrap:"wrap"}}>{lcdOptsA.map((o,i)=>{const cnt=inv.filter(x=>x.lcdFault===o).length;return <div key={o} style={{display:"flex",alignItems:"center",gap:4,padding:"4px 8px",borderRadius:5,background:T.card,border:`1px solid ${T.border}`}}><span style={{fontSize:14}}>{lcdEmojis[i%lcdEmojis.length]}</span><span style={{fontSize:11,color:T.text}}>{o}</span><span style={{fontSize:12,fontWeight:700,color:T.danger}}>{cnt}</span></div>;})}</div><div style={{display:"grid",gap:4}}>{lcdFaultUnits.map(it=>{const techJob=jobs.find(j=>j.component==="glass"&&j.imei===it.imei);const techName=techJob?techs.find(t=>t.id===techJob.techId)?.name||"—":"—";return <div key={it._dbId} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",background:T.card,borderRadius:6,border:`1px solid ${T.border}`}}><span style={{color:T.warning,fontWeight:700,fontSize:12,minWidth:50}}>{it.grade||"—"}</span><span style={{color:T.text,fontSize:11,flex:1}}>{it.product}{it.size?` · ${it.size}`:""}{it.color?` · ${it.color}`:""}</span><span style={{fontSize:13}}>{getLcdEmoji(it.lcdFault)}</span><span style={{fontSize:10,color:T.danger,fontWeight:600,maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{it.lcdFault}</span><span style={{fontSize:10,color:T.accent}}>Tech: {techName}</span></div>;})}</div></Mod>}
+
+        {/* Redo Root Cause Tracker */}
+        {(()=>{const redoJobs=jobs.filter(j=>j.status==="redo-flagged"||j.jobType==="Redo");if(redoJobs.length===0)return null;
+          const byReason={};redoJobs.forEach(j=>{const r=j.redoReason||j.remark||"Unknown";byReason[r]=(byReason[r]||0)+1;});
+          const byModel={};redoJobs.forEach(j=>{const m=j.model||"Unknown";byModel[m]=(byModel[m]||0)+1;});
+          const byTech={};redoJobs.forEach(j=>{const t=techs.find(x=>x.id===j.techId);const n=t?t.name:j.techId;byTech[n]=(byTech[n]||0)+1;});
+          const repeatUnits={};redoJobs.forEach(j=>{const k=j.imei||j.serial;if(!k)return;if(!repeatUnits[k])repeatUnits[k]={count:0,model:j.model,grade:""};repeatUnits[k].count++;const it=inv.find(i=>(j.imei&&i.imei===j.imei)||(j.serial&&i.serial&&i.serial.toUpperCase()===j.serial.toUpperCase()));if(it&&it.grade)repeatUnits[k].grade=it.grade;});
+          const repeats=Object.entries(repeatUnits).filter(([,v])=>v.count>=2).sort((a,b)=>b[1].count-a[1].count);
+          const sortDesc=(obj)=>Object.entries(obj).sort((a,b)=>b[1]-a[1]);
+          const RankList=({items,color})=><div style={{display:"grid",gap:3}}>{items.slice(0,8).map(([k,v],i)=><div key={k} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 8px",borderRadius:5,background:T.card,border:`1px solid ${T.border}`}}>
+            <span style={{fontSize:12,fontWeight:800,color,minWidth:18}}>{i+1}</span>
+            <span style={{fontSize:11,color:T.text,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{k}</span>
+            <span style={{fontSize:13,fontWeight:700,color}}>{v}</span>
+          </div>)}</div>;
+          return <div style={{marginTop:20,borderTop:`1px solid ${T.border}`,paddingTop:16}}>
+            <h3 style={{color:T.danger,fontSize:14,fontWeight:700,margin:"0 0 4px"}}>{LL.redoRootCause}</h3>
+            <p style={{color:T.dim,fontSize:11,margin:"0 0 12px"}}>{redoJobs.length} {LL.totalRedoJobs}</p>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+              <div style={{background:T.inputBg,borderRadius:8,padding:12,border:`1px solid ${T.border}`}}>
+                <h4 style={{color:T.danger,fontSize:12,fontWeight:700,margin:"0 0 8px"}}>{LL.byReason}</h4>
+                <RankList items={sortDesc(byReason)} color={T.danger}/>
+              </div>
+              <div style={{background:T.inputBg,borderRadius:8,padding:12,border:`1px solid ${T.border}`}}>
+                <h4 style={{color:T.accent,fontSize:12,fontWeight:700,margin:"0 0 8px"}}>{LL.byModel}</h4>
+                <RankList items={sortDesc(byModel)} color={T.accent}/>
+              </div>
+              <div style={{background:T.inputBg,borderRadius:8,padding:12,border:`1px solid ${T.border}`}}>
+                <h4 style={{color:T.warning,fontSize:12,fontWeight:700,margin:"0 0 8px"}}>{LL.byTech}</h4>
+                <RankList items={sortDesc(byTech)} color={T.warning}/>
+              </div>
+              <div style={{background:T.inputBg,borderRadius:8,padding:12,border:`1px solid ${T.border}`}}>
+                <h4 style={{color:T.purple,fontSize:12,fontWeight:700,margin:"0 0 8px"}}>{LL.repeatUnits}</h4>
+                {repeats.length===0?<div style={{color:T.dim,fontSize:11,padding:8}}>{LL.noRepeatRedos}</div>
+                :<div style={{display:"grid",gap:3}}>{repeats.slice(0,8).map(([k,v])=><div key={k} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 8px",borderRadius:5,background:T.card,border:`1px solid ${T.border}`}}>
+                  {v.codeId&&<span style={{color:T.warning,fontWeight:700,fontSize:11}}>{v.codeId}</span>}
+                  <span style={{fontSize:11,color:T.text,flex:1}}>{v.model}</span>
+                  <span style={{fontSize:13,fontWeight:700,color:T.purple}}>{v.count}x</span>
+                </div>)}</div>}
+              </div>
+            </div>
+          </div>;
+        })()}
+      </>}
+
+      {tab==="qc"&&<>
+        <h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{LL.bulkQC}</h3><div style={{background:T.card,borderRadius:10,padding:16,border:`1px solid ${T.border}`,marginBottom:16}}>
+        <div style={{display:"flex",gap:8,marginBottom:12,alignItems:"center",flexWrap:"wrap"}}><span style={{color:T.text,fontSize:12,fontWeight:600}}>{LL.bulkMode}:</span><div style={{display:"flex",borderRadius:6,overflow:"hidden",border:`1px solid ${T.border}`}}><button onClick={()=>setBqMode("pass")} style={{padding:"8px 18px",fontSize:12,fontWeight:bqMode==="pass"?700:400,background:bqMode==="pass"?T.success:"transparent",color:bqMode==="pass"?"#fff":T.dim,border:"none",cursor:"pointer"}}>{Ic.chk} {LL.qcPass}</button><button onClick={()=>setBqMode("redo")} style={{padding:"8px 18px",fontSize:12,fontWeight:bqMode==="redo"?700:400,background:bqMode==="redo"?T.danger:"transparent",color:bqMode==="redo"?"#fff":T.dim,border:"none",cursor:"pointer"}}>{Ic.rdo} {LL.needsRedo}</button></div></div>
+        {bqMode==="pass"&&<div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}><input style={{...bI,flex:1,minWidth:200,fontSize:12,padding:"8px 10px"}} placeholder={lang==="cn"?"QC备注（适用于所有单位）...":"QC Remark (applies to all units)..."} value={bqDetail} onChange={e=>setBqDetail(e.target.value)}/></div>}
+        {bqMode==="redo"&&<div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}><select value={bqReason} onChange={e=>setBqReason(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"8px 10px",flex:1,minWidth:150}}><option value="">{LL.redoReason}...</option>{(remarkCodes.length>0?remarkCodes.map(rc=><option key={rc.id} value={rc.meaning_en}>{rc.code} — {lang==="cn"&&rc.meaning_cn?rc.meaning_cn:rc.meaning_en}</option>):RR.map(r=><option key={r} value={r}>{r}</option>))}</select><input style={{...bI,flex:1,minWidth:150,fontSize:12,padding:"8px 10px"}} placeholder={LL.redoHint} value={bqDetail} onChange={e=>setBqDetail(e.target.value)}/></div>}
+        <Fld label={LL.scanIMEIs}><textarea style={{...bI,minHeight:120,resize:"vertical",fontFamily:"'JetBrains Mono',monospace",fontSize:13}} placeholder={"353919102579731\n350888746468697\n356814110916321"} value={bqIMEIs} onChange={e=>setBqIMEIs(e.target.value)}/></Fld>
+        {bqIMEIs.trim()&&<div style={{marginBottom:10}}>{(()=>{const imeis=bqIMEIs.split("\n").map(s=>s.replace(/\D/g,"").trim()).filter(s=>s.length===15);const matched=imeis.filter(im=>qcP.some(j=>j.imei===im)||qcReady.some(i=>i.imei===im));const notFound=imeis.filter(im=>!qcP.some(j=>j.imei===im)&&!qcReady.some(i=>i.imei===im));return (<div style={{fontSize:11,color:T.muted}}><span style={{color:T.success,fontWeight:600}}>{matched.length} {LL.unitsFound}</span>{notFound.length>0&&<span style={{color:T.danger,marginLeft:8}}>{notFound.length} {LL.noMatch}</span>}{notFound.length>0&&<div style={{fontSize:10,color:T.danger,marginTop:3,fontFamily:"monospace"}}>{notFound.join(", ")}</div>}</div>);})()}</div>}
+        <button onClick={handleBulkQC} style={{...pB,width:"100%",justifyContent:"center",padding:"12px 16px",fontSize:14,borderRadius:9,background:bqMode==="pass"?T.success:T.danger}}>{bqMode==="pass"?<>{Ic.chk} {LL.bulkQCPass} ({bqIMEIs.split("\n").filter(s=>s.replace(/\D/g,"").trim().length===15).length})</>:<>{Ic.rdo} {LL.bulkRedo} ({bqIMEIs.split("\n").filter(s=>s.replace(/\D/g,"").trim().length===15).length})</>}</button>
+        {bqMsg&&<div style={{marginTop:10,padding:10,borderRadius:6,background:bqMsg.startsWith("✅")?"rgba(16,185,129,0.1)":"rgba(239,68,68,0.1)",color:bqMsg.startsWith("✅")?T.success:T.danger,fontSize:12,fontWeight:600}}>{bqMsg}</div>}
+        </div>
+        <h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 4px"}}>{LL.qcVerify}</h3><p style={{color:T.dim,fontSize:11,margin:"0 0 12px"}}>{LL.qcDesc}</p>
+        {qcReady.length===0?<div style={{textAlign:"center",padding:30,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`}}>{LL.allClear}</div>:(
+          <div style={{display:"grid",gap:7}}>{qcReady.map(it=>{const uj=getUJ(it.imei,it.serial,jobs);const allT=[...new Set(uj.map(x=>x.techId))].map(id=>{const t=techs.find(x=>x.id===id);return t?t.name:id;});const cfJobs=uj.filter(j=>(j.redoReason||"").startsWith("CANNOT FIX"));const hasCF=cfJobs.length>0;const latestCF=cfJobs.sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn))[0];const repairJobs=uj.filter(j=>j.component==="full"||!j.component);const latestRepair=repairJobs.sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn))[0];const cardKey=it._dbId;const sortedUJ=[...uj].sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn));const fallbackTech=sortedUJ.length>0?sortedUJ[0].techId:techs[0]?.id||user.id;
+            const getSectionCloser=(section)=>{const sl=(it.cameraDetail||{}).stepLog||[];if(section==="housing"){const hClose=[...sl].reverse().find(s=>s.type==="housing"&&(s.step||"").includes("2nd"));return hClose?.techId||null;}if(section==="glass"){const gClose=[...sl].reverse().find(s=>s.type==="glass_frame");return gClose?.techId||null;}if(section==="camera"){const cClose=[...sl].reverse().find(s=>s.type==="camera_inspect"||s.type==="camera_ok");return cClose?.techId||null;}return null;};
+            const getRedoTech=(types)=>{const t=types||{};if(t.housing)return getSectionCloser("housing")||fallbackTech;if(t.glass)return getSectionCloser("glass")||fallbackTech;if(t.camera)return getSectionCloser("camera")||fallbackTech;return getSectionCloser("housing")||fallbackTech;};
+            return (<div key={cardKey} style={{background:T.card,borderRadius:9,padding:"12px 14px",border:`1px solid ${T.border}`,borderLeft:`3px solid ${T.qcO}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
+              <div style={{flex:1,minWidth:150}}>
+                <div style={{display:"flex",gap:3,marginBottom:3,flexWrap:"wrap"}}>{it.grade&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:10,fontWeight:700,background:"rgba(201,168,76,0.15)",color:T.accent}}>Grade: {it.grade}</span>}{it.redoHistory&&it.redoHistory.length>0&&<span style={{padding:"1px 4px",borderRadius:3,fontSize:8,fontWeight:700,background:"rgba(239,68,68,0.12)",color:T.danger}}>R×{it.redoHistory.length}</span>}</div>
+                <div style={{color:T.text,fontWeight:600,fontSize:14,marginBottom:2}}>{it.product}{it.size?` · ${it.size}`:""}{it.color?` · ${it.color}`:""}</div>
+                <div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:2}}>{allT.map((n,i)=><span key={i} style={{padding:"1px 5px",borderRadius:3,fontSize:9,background:"rgba(201,168,76,0.1)",color:T.accent}}>{n}</span>)}</div>
+                <div style={{fontSize:11,fontFamily:"monospace",color:T.muted,marginBottom:2}}>{it.imei&&<span style={{color:T.accent}}>IMEI:{it.imei} </span>}{it.conditionRemark&&<span style={{color:T.warning}}>⚠ {it.conditionRemark}</span>}</div>
+                <div style={{display:"flex",gap:6,marginBottom:3,alignItems:"center"}}>
+                  <span style={{fontSize:10,color:T.muted}}>G:{it.glassAutoSkip?"🆗":it.glassStatus==="serviced"?"✅":"⬜"}</span>
+                  <span style={{fontSize:10,color:T.muted}}>C:{it.cameraAutoSkip?"🆗":it.cameraStatus==="serviced"?"✅":"⬜"}</span>
+                  <span style={{fontSize:10,color:T.muted}}>H:{it.housingStatus==="serviced"?"✅":"⬜"}</span>
+                  {!it.glassAutoSkip&&<span style={{fontSize:14}} title={"LCD: "+(it.lcdFault||"OK")}>{it.lcdFault?getLcdEmoji(it.lcdFault):"🟢"}</span>}{!it.glassAutoSkip&&it.glassShadow&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:700,background:it.glassShadow==="DS"?"rgba(239,68,68,0.15)":it.glassShadow==="MS"?"rgba(245,158,11,0.15)":"rgba(201,168,76,0.15)",color:it.glassShadow==="DS"?T.danger:it.glassShadow==="MS"?T.warning:T.accent}} title={it.glassShadowRemark||""}>{it.glassShadow}</span>}{!it.cameraAutoSkip&&<span style={{fontSize:14}} title={"Cam Parts: "+(it.camPartsNote||"Original")}>{it.camPartsNote?(()=>{const cpSJ=subJobs.find(s=>s.tab==="camera"&&s.name.toLowerCase().includes("part"));const opts=cpSJ?cpSJ.options:[];const ci=opts.indexOf(it.camPartsNote);const emojis=["🟠","🟣","🩷","🔵","🟤","🔴"];return ci>=0?emojis[ci%emojis.length]:"🟠";})():"🟢"}</span>}</div>
+                {/* batchRemark hidden - shows conditionRemark instead */}
+                {it.conditionRemark&&<div style={{fontSize:11,color:T.amber,padding:"2px 5px",background:"rgba(217,119,6,0.06)",borderRadius:3,marginBottom:2}}>📋 {it.conditionRemark}</div>}
+                {hasCF&&<div style={{fontSize:12,color:"#fff",fontWeight:700,padding:"5px 8px",background:T.danger,borderRadius:5,marginBottom:2}}>{Ic.tri} {latestCF.redoReason}{latestCF.redoRemark?" - Tried: "+latestCF.redoRemark:""}</div>}
+                {uj.length>0&&<details style={{marginTop:4}}><summary style={{fontSize:11,color:T.accent,cursor:"pointer"}}>{LL.techHistory} ({uj.length})</summary><div style={{padding:"4px 0",fontSize:10,color:T.muted}}>{uj.map((x,i)=>{const ut=techs.find(y=>y.id===x.techId);const desc=sjS(x.subJobs)||x.remark||"";return (<div key={i}>• {ut?.name||x.techId}: [{x.jobType}] {desc} ({(SBL[lang]||SBL.en)[x.status]||x.status})</div>);})}</div></details>}
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:4,minWidth:160}}>
+                <input style={{...bI,fontSize:11,padding:"5px 7px"}} placeholder={lang==="cn"?"QC备注...":"QC Remark..."} value={qcRemarkMap[cardKey]||""} onChange={e=>setQcRemarkMap(p=>({...p,[cardKey]:e.target.value}))}/>
+                <button onClick={async()=>{const qcRmk=qcRemarkMap[cardKey]||"";
+                  if(latestRepair){await db.setJobStatus(latestRepair.id,"completed",{qcBy:user.name});if(latestRepair.jobType==="Redo"&&(latestRepair.imei||latestRepair.serial)){const prev=jobs.filter(x=>x.id!==latestRepair.id&&x.status==="redo-flagged"&&((latestRepair.imei&&x.imei===latestRepair.imei)||(latestRepair.serial&&x.serial&&x.serial.toUpperCase()===latestRepair.serial.toUpperCase())));for(const p of prev){await db.setJobStatus(p.id,"completed",{qcBy:user.name,redoRemark:(p.redoRemark?p.redoRemark+" | ":"")+"Redo resolved"});}}}
+                  await stampQcByUnit(it.imei,it.serial,user.name);
+                  await db.updateInvStatus(it._dbId,{stepLog:[{type:"qc_pass",techId:user.id,techName:user.name,remark:qcRmk||"",at:new Date().toISOString()}]});
+                  await db.logAdminAction(user.name,"QC Pass",latestRepair?.id||"",(it.imei||"")+" "+it.product+(qcRmk?" | "+qcRmk:""));
+                  setQcRemarkMap(p=>({...p,[cardKey]:""}));
+                }} style={{...bB,padding:"8px 12px",fontSize:13,background:T.success,color:"#fff",borderRadius:7,justifyContent:"center"}}>{Ic.chk} {LL.qcPass}</button>
+                {hasCF&&<button onClick={async()=>{const j=latestCF;await db.setJobStatus(j.id,"direct-sell",{qcBy:user.name});await db.logAdminAction(user.name,"Direct Sell",j.id,it.product+" - "+j.redoReason);}} style={{...bB,padding:"8px 12px",fontSize:13,background:T.danger,color:"#fff",borderRadius:7,justifyContent:"center"}}>{Ic.tri} {LL.directSell}</button>}
+                <select value={rrMap[cardKey]||""} onChange={e=>setRrMap(p=>({...p,[cardKey]:e.target.value}))} style={{...bI,fontSize:12,padding:"5px 7px"}}><option value="">{LL.redoReason}...</option>{(remarkCodes.length>0?remarkCodes.map(rc=><option key={rc.id} value={rc.meaning_en}>{rc.code} — {lang==="cn"&&rc.meaning_cn?rc.meaning_cn:rc.meaning_en}</option>):RR.map(r=><option key={r} value={r}>{r}</option>))}</select>
+                <input style={{...bI,fontSize:12,padding:"5px 7px"}} placeholder={LL.redoHint} value={rmMap[cardKey]||""} onChange={e=>setRmMap(p=>({...p,[cardKey]:e.target.value}))}/>
+                <button onClick={async()=>{const reason=rrMap[cardKey]||"";const remark=rmMap[cardKey]||"";if(!reason){alert(LL.redoReason);return;}
+                  const redoTech=getRedoTech({});const qcRmk=qcRemarkMap[cardKey]||"";
+                  await db.createJob({techId:redoTech,model:it.product,storage:it.size,color:it.color,grade:it.grade||"",batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"Redo",subJobs:[],remark:"Redo: "+reason+(remark?" — "+remark:""),qty:1,status:"redo-flagged",dateDone:new Date().toISOString(),mode:"repair",component:"full",redoReason:reason,redoRemark:remark,qcBy:user.name,redoSeen:false});
+                  await db.logAdminAction(user.name,"Needs Redo","",(it.imei||"")+" "+it.product+" | "+reason+(remark?" — "+remark:""));
+                  if(qcRmk)await db.updateInvStatus(it._dbId,{stepLog:[{type:"qc_remark",remark:qcRmk,techId:user.id,techName:user.name,at:new Date().toISOString()}]});
+                  try{db.addNotif(redoTech,"redo","Redo Flagged",`${it.product}: ${reason}`);}catch(e){}
+                  setRrMap(p=>({...p,[cardKey]:""}));setRmMap(p=>({...p,[cardKey]:""}));setQcRemarkMap(p=>({...p,[cardKey]:""}));
+                }} style={{...bB,padding:"8px 12px",fontSize:13,background:T.danger,color:"#fff",borderRadius:7,justifyContent:"center"}}>{Ic.rdo} {LL.needsRedo}</button>
+                {/* Outsource hidden for KIS */}
+              </div>
+            </div></div>);})}</div>
+        )}
+      </>}
+
+      {tab==="batch"&&<><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{LL.batchUpload}</h3><div style={{background:T.card,borderRadius:10,padding:16,border:`1px solid ${T.border}`,marginBottom:12}}><div style={{marginBottom:10}}><label style={{fontSize:11,fontWeight:600,color:T.muted,display:"block",marginBottom:4}}>{lang==="cn"?"入库仓库":"Receiving Warehouse"}</label><select value={batchWH} onChange={e=>setBatchWH(e.target.value)} style={{...bI,fontSize:13}}><option value="">{lang==="cn"?"选择仓库...":"Select warehouse..."}</option>{buyers.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></div><div style={{textAlign:"center",padding:"18px 12px",border:`2px dashed ${T.border}`,borderRadius:7,marginBottom:8}}><label style={{...pB,cursor:"pointer"}}>{Ic.up} {LL.chooseFile}<input type="file" accept=".csv,.xlsx,.xls" onChange={handleCSV} style={{display:"none"}}/></label></div><button onClick={()=>{const hdr="BatchID,Code ID,Product,Size,Color,ModelNo,IMEI,SerialNo,Remarks";const sample=[hdr,"MAR93/M530/AC,AC-1,iPhone 15 Pro Max,256GB,Black Titanium,MLQ83,353919102579731,G6TY73SRKPH6,","MAR93/M530/AC,AC-2,iPhone 14 Pro,128GB,Deep Purple,MQ0E3,350888746468697,F4KY23HJKL9N,","MAR93/M530/AC,AC-3,iPhone 13,256GB,Blue,,356814110916321,DNPX42RMKPH7,Screen crack"].join("\n");const blob=new Blob([sample],{type:"text/csv"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="batch_template.csv";a.click();URL.revokeObjectURL(url);}} style={{...gB,width:"100%",justifyContent:"center",padding:"8px",fontSize:12,marginBottom:8}}>{Ic.dl} Download Template (CSV)</button>{uM&&<div style={{padding:6,borderRadius:4,background:uM.startsWith("✅")?"rgba(16,185,129,0.1)":"rgba(239,68,68,0.1)",color:uM.startsWith("✅")?T.success:T.danger,fontSize:12,fontWeight:600}}>{uM}</div>}</div>
+        {batches.length>0&&<div style={{display:"grid",gap:4}}>{batches.map(b=>{const it=inv.filter(i=>i.batchId===b);const uploadDate=it[0]?.createdAt?fD(it[0].createdAt):"";return (<div key={b} style={{background:T.card,borderRadius:6,padding:"8px 12px",border:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div><span style={{color:T.accent,fontWeight:700,fontSize:13,fontFamily:"monospace"}}>{b}</span><span style={{color:T.dim,fontSize:11,marginLeft:5}}>{it.length} units</span>{uploadDate&&<span style={{color:T.muted,fontSize:10,marginLeft:8}}>{uploadDate}</span>}</div><button onClick={()=>{if(confirm(LL.delConfirm))db.deleteBatch(b);}} style={{...dB,padding:"3px 7px",fontSize:11}}>{Ic.del}</button></div>);})}</div>}
+      </>}
+
+      {tab==="inventory"&&<><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 4px"}}>{LL.inventory} ({inv.length})</h3>
+        <div className="fxFB" style={{display:"flex",gap:5,marginBottom:10,alignItems:"center",flexWrap:"wrap"}}>{!bulkMode?(<><div style={{position:"relative",flex:1,minWidth:140}}><input style={{...bI,paddingLeft:38,fontSize:13}} placeholder={LL.searchInv} value={iS} onChange={e=>setIS(e.target.value)}/><div style={{position:"absolute",left:8,top:"50%",transform:"translateY(-50%)",color:T.dim}}>{Ic.srch}</div></div><select value={iB} onChange={e=>setIB(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px"}}><option value="all">{LL.allBatches}</option>{batches.map(b=><option key={b} value={b}>{b}</option>)}</select><select value={iSt} onChange={e=>{setISt(e.target.value);if(e.target.value==="delivered")setShowDelivered(true);}} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px"}}><option value="all">{LL.allStatus}</option><option value="na">{LL.notStarted}</option>{STATUSES.map(s=><option key={s} value={s}>{(SBL[lang]||SBL.en)[s]||s}</option>)}<option value="delivered">{lang==="cn"?"已退回":"Returned"} ({deliveredIds.size})</option></select><label style={{display:"flex",alignItems:"center",gap:3,cursor:"pointer",fontSize:11,color:showDelivered?T.accent:T.dim}}><input type="checkbox" checked={showDelivered} onChange={()=>setShowDelivered(!showDelivered)} style={{width:13,height:13,accentColor:T.accent}}/>{lang==="cn"?"含已退回":"Incl. Returned"}</label><button onClick={()=>setBulkMode(true)} style={{...gB,padding:"4px 8px",fontSize:10}}>{LL.bulkSearch}</button></>):(<><textarea style={{...bI,minHeight:55,fontSize:12,fontFamily:"monospace",flex:1}} placeholder={LL.bulkHint} value={bulkQ} onChange={e=>setBulkQ(e.target.value)}/><button onClick={()=>{setBulkMode(false);setBulkQ("");}} style={{...gB,padding:"4px 8px",fontSize:10}}>✕</button></>)}</div>
+        <div style={{color:T.dim,fontSize:11,marginBottom:5}}>{invList.length} results</div>
+        <div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,overflow:"auto",maxHeight:"70vh"}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:900}}><thead style={{position:"sticky",top:0,zIndex:5,background:T.card}}><tr style={{borderBottom:`1px solid ${T.border}`}}>{["#","Date Send","Model","IMEI","Grade","Problem","Warehouse","Glass","LCD","Camera","CParts","Housing","Status",""].map(h=><th key={h} style={{padding:"7px 5px",textAlign:"left",color:T.dim,fontSize:9,fontWeight:600,textTransform:"uppercase",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead><tbody>{invList.map((it,idx)=>{const uj=getUJ(it.imei,it.serial,jobs);const tN=[...new Set(uj.map(j=>j.techId))].map(id=>{const t=techs.find(x=>x.id===id);return t?t.name:id;});const repairJobs=uj.filter(j=>j.component==="full"||!j.component);const latest=repairJobs.sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn))[0];const allSvcDone=it.glassStatus==="serviced"&&it.cameraStatus==="serviced"&&it.housingStatus==="serviced";const hasQcPass=(it.stepLog||[]).some(s=>s.type==="qc_pass");const st=(()=>{if(latest&&(latest.status==="redo-flagged"||latest.status==="direct-sell"||latest.status==="outsourced"))return latest.status;if((latest&&latest.status==="completed"&&allSvcDone)||hasQcPass)return "completed";if(allSvcDone&&(!latest||latest.status==="qc-pending"||latest.status==="in-progress"))return "qc-pending";if(!allSvcDone&&uj.length>0)return "in-progress";if(latest)return latest.status;return "na";})();const sx=st==="na"?{bg:"rgba(100,116,139,0.12)",c:T.dim}:(SBC[st]||{bg:"rgba(100,116,139,0.12)",c:T.dim});const sl=st==="na"?LL.notStarted:(SBL[lang]||SBL.en)[st]||st;
+          return (<tr key={idx} style={{borderBottom:`1px solid ${T.border}`}}><td style={{padding:"6px 5px",color:T.dim,fontSize:11}}>{idx+1}</td><td style={{padding:"6px 5px",color:T.muted,fontSize:10}}>{it.batchId?it.batchId.replace("BATCH-","").replace(/(\d{4})(\d{2})(\d{2})/,"$3/$2/$1"):"—"}{(()=>{const oi=(orderItems||[]).find(x=>x.inventory_id===it._dbId);if(!oi)return null;const ord=(buyerOrders||[]).find(x=>x.id===oi.order_id);if(!ord)return null;const byr=(buyers||[]).find(b=>b.id===ord.buyer_id);return <span style={{marginLeft:3,padding:"0 3px",borderRadius:2,fontSize:8,fontWeight:600,background:ord.priority==="urgent"?"rgba(239,68,68,0.15)":ord.priority==="rush"?"rgba(245,158,11,0.15)":"rgba(100,116,139,0.15)",color:ord.priority==="urgent"?T.danger:ord.priority==="rush"?T.warning:T.dim}}>{byr?.name||"?"}</span>;})()}</td><td style={{padding:"6px 5px",color:T.text,fontSize:11}}>{it.product}{it.size?" · "+it.size:""}{it.color?" · "+it.color:""}{it.newColor&&it.newColor!==it.color&&<span style={{marginLeft:2,padding:"0 3px",borderRadius:2,fontSize:8,fontWeight:700,background:"rgba(139,92,246,0.15)",color:T.purple}}>→{it.newColor}</span>}</td><td style={{padding:"6px 5px",color:T.accent,fontSize:10,fontFamily:"monospace"}}>{it.imei||"—"}</td><td style={{padding:"6px 5px",color:T.warning,fontSize:11,fontWeight:600}}>{it.grade||"—"}</td><td style={{padding:"6px 5px",color:T.amber||T.warning,fontSize:10}}>{it.conditionRemark||"—"}</td><td style={{padding:"6px 5px",fontSize:10,color:T.text}}>{(()=>{const wh=buyers.find(b=>b.id===it.warehouseId);return wh?<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(201,168,76,0.12)",color:T.accent}}>{wh.name}</span>:<span style={{color:T.dim}}>—</span>;})()}</td><td style={{padding:"6px 5px"}}><span style={{padding:"1px 4px",borderRadius:3,fontSize:9,fontWeight:600,background:COMP_COLORS[it.glassStatus]||COMP_COLORS.na,color:"#fff"}}>{it.glassStatus==="serviced"?"✅":"na"===it.glassStatus?"⬜":it.glassStatus==="service"?"🟡":it.glassStatus}{it.glassAutoSkip&&it.glassStatus==="serviced"&&<span style={{fontSize:8,color:"#3b82f6"}}>●</span>}</span>{it.glassStatus==="serviced"&&<button onClick={()=>{setRedoSvcUnit(it);setRedoSvcType("glass");setRedoSvcReason("");}} style={{marginLeft:2,background:"none",border:"none",cursor:"pointer",fontSize:10,color:T.danger,padding:0}} title="Redo Glass">{Ic.rdo}</button>}</td><td style={{padding:"6px 5px",textAlign:"center"}}>{it.glassStatus==="serviced"?(it.lcdFault?(()=>{const lcdSJ2=subJobs.find(s=>s.tab==="glass"&&s.name.toLowerCase().includes("lcd"));const opts=lcdSJ2?lcdSJ2.options:[];const ci=opts.indexOf(it.lcdFault);const emojis=["🔴","🟠","🟣","🩷","🟤","🔵"];return <span title={it.lcdFault} style={{fontSize:14,cursor:"help"}}>{ci>=0?emojis[ci%emojis.length]:"🔴"}</span>;})():<span title="OK" style={{fontSize:14}}>🟢</span>):<span style={{color:T.dim,fontSize:9}}>—</span>}</td><td style={{padding:"6px 5px"}}><span style={{padding:"1px 4px",borderRadius:3,fontSize:9,fontWeight:600,background:COMP_COLORS[it.cameraStatus]||COMP_COLORS.na,color:"#fff"}}>{it.cameraStatus==="serviced"?"✅":it.cameraStatus==="washing"?"🟣":it.cameraStatus==="service"?"🟡":"na"===it.cameraStatus?"⬜":it.cameraStatus}{it.cameraAutoSkip&&it.cameraStatus==="serviced"&&<span style={{fontSize:8,color:"#3b82f6"}}>●</span>}</span>{it.cameraStatus==="serviced"&&<button onClick={()=>{setRedoSvcUnit(it);setRedoSvcType("camera");setRedoSvcReason("");}} style={{marginLeft:2,background:"none",border:"none",cursor:"pointer",fontSize:10,color:T.danger,padding:0}} title="Redo Camera">{Ic.rdo}</button>}</td><td style={{padding:"6px 5px",textAlign:"center"}}>{it.cameraStatus==="serviced"?(it.camPartsNote?(()=>{const cpSJ=subJobs.find(s=>s.tab==="camera"&&s.name.toLowerCase().includes("part"));const opts=cpSJ?cpSJ.options:[];const ci=opts.indexOf(it.camPartsNote);const emojis=["🟠","🟣","🩷","🔵","🟤","🔴"];return <span title={it.camPartsNote} style={{fontSize:14,cursor:"help"}}>{ci>=0?emojis[ci%emojis.length]:"🟠"}</span>;})():<span title="Original" style={{fontSize:14}}>🟢</span>):<span style={{color:T.dim,fontSize:9}}>—</span>}</td><td style={{padding:"6px 5px"}}><span title={it.housingStatus==="partial"?(it.housingSteps||[]).join(", "):it.housingStatus} style={{fontSize:14,cursor:it.housingStatus==="partial"?"help":"default"}}>{it.housingStatus==="serviced"?"✅":it.housingStatus==="partial"?"☑️":"⬜"}</span></td><td style={{padding:"6px 5px"}}>{deliveredIds.has(it._dbId)?<span style={{padding:"1px 4px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(16,185,129,0.15)",color:T.success}}>📦 Delivered</span>:<span style={{padding:"1px 4px",borderRadius:3,fontSize:9,fontWeight:600,background:sx.bg,color:sx.c}}>{sl}</span>}{uj.some(j=>j.jobType==="Redo")&&<span style={{marginLeft:2,padding:"1px 3px",borderRadius:2,fontSize:8,fontWeight:700,background:"rgba(239,68,68,0.12)",color:T.danger}}>R</span>}</td><td style={{padding:"6px 5px"}}><button onClick={()=>setUnitDet({it,uj})} style={{...gB,padding:"2px 5px",fontSize:9}}>{Ic.eye}</button></td></tr>);})}</tbody></table></div>
+        {unitDet&&<Mod title={`${LL.unitDetail}: ${unitDet.it.product}`} onClose={()=>setUnitDet(null)} w="600px"><div style={{marginBottom:10,padding:10,background:T.inputBg,borderRadius:7}}>{unitDet.it.grade&&<div style={{color:T.warning,fontWeight:700,fontSize:14,marginBottom:3}}>Grade: {unitDet.it.grade}</div>}<div style={{color:T.text,fontWeight:700,fontSize:14,marginBottom:2}}>{unitDet.it.product} {unitDet.it.size} {unitDet.it.color}{unitDet.it.newColor&&unitDet.it.newColor!==unitDet.it.color&&<span style={{marginLeft:6,padding:"1px 6px",borderRadius:4,fontSize:11,fontWeight:700,background:"rgba(139,92,246,0.15)",color:T.purple}}>→ {unitDet.it.newColor}</span>}</div><div style={{fontSize:12,fontFamily:"monospace",color:T.muted}}>IMEI: {unitDet.it.imei||"—"} | Batch: {unitDet.it.batchId}</div>{unitDet.it.conditionRemark&&<div style={{fontSize:12,color:T.amber,fontWeight:600,marginTop:3}}>⚠ Problem: {unitDet.it.conditionRemark}</div>}{unitDet.it.batchRemark&&<div style={{marginTop:5,padding:"4px 8px",background:"rgba(100,116,139,0.06)",borderRadius:4,color:T.muted,fontSize:12}}>📝 {unitDet.it.batchRemark}</div>}{unitDet.it.conditionRemark&&<div style={{marginTop:3,padding:"4px 8px",background:"rgba(217,119,6,0.06)",borderRadius:4,color:T.amber,fontSize:12}}>📋 {unitDet.it.conditionRemark}</div>}{unitDet.it.glassStatus==="serviced"&&(()=>{const lcdLog=(unitDet.it.stepLog||[]).filter(s=>s.type==="glass_lcd"||s.type==="glass_ok"||s.type==="glass_frame").pop();const lcdTech=lcdLog?(lcdLog.techName||(techs.find(t=>t.id===lcdLog.techId)||{}).name||""):"";return <div style={{marginTop:3,padding:"4px 8px",borderRadius:4,fontSize:12,fontWeight:600,background:unitDet.it.lcdFault?"rgba(239,68,68,0.1)":"rgba(16,185,129,0.08)",color:unitDet.it.lcdFault?T.danger:T.success}}>{unitDet.it.lcdFault?`🔴 LCD: ${unitDet.it.lcdFault}`:"LCD: ✅ OK"}{lcdTech&&<span style={{fontSize:10,fontWeight:500,marginLeft:6,color:T.muted}}>-{lcdTech}</span>}</div>;})()}{unitDet.it.cameraStatus==="serviced"&&(()=>{const camLog=(unitDet.it.stepLog||[]).filter(s=>s.type==="camera_inspect"||s.type==="camera_ok").pop();const camTech=camLog?(camLog.techName||(techs.find(t=>t.id===camLog.techId)||{}).name||""):"";return <div style={{marginTop:3,padding:"4px 8px",borderRadius:4,fontSize:12,fontWeight:600,background:unitDet.it.camPartsNote?"rgba(139,92,246,0.1)":"rgba(16,185,129,0.08)",color:unitDet.it.camPartsNote?T.purple:T.success}}>{unitDet.it.camPartsNote?`🟣 Cam Parts: ${unitDet.it.camPartsNote}`:"Cam Parts: ✅ Original"}{camTech&&<span style={{fontSize:10,fontWeight:500,marginLeft:6,color:T.muted}}>-{camTech}</span>}</div>;})()}</div>
+          {/* Service Status Summary */}
+          <div style={{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+            <div style={{padding:"6px 10px",borderRadius:6,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:4}}><span style={{fontSize:12}}>🏠</span><span style={{fontSize:11,color:T.text,fontWeight:600}}>{unitDet.it.housingStatus==="serviced"?"✅":unitDet.it.housingStatus==="partial"?"☑️":"⬜"}</span>{unitDet.it.housingSteps?.length>0&&<span style={{fontSize:9,color:T.muted}}>{unitDet.it.housingSteps.join(", ")}</span>}</div>
+            <div style={{padding:"6px 10px",borderRadius:6,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:4}}><span style={{fontSize:12}}>🔲</span><span style={{fontSize:11,color:T.text,fontWeight:600}}>{unitDet.it.glassStatus==="serviced"?(unitDet.it.glassAutoSkip?"🆗":"✅"):unitDet.it.glassStatus==="service"?"🟡":"⬜"}</span>{unitDet.it.glassAutoSkip&&<span style={{fontSize:9,color:T.accent}}>auto-skip</span>}{unitDet.it.glassShadow&&<span style={{fontSize:9,color:T.warning}}>{unitDet.it.glassShadow}</span>}</div>
+            <div style={{padding:"6px 10px",borderRadius:6,border:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:4}}><span style={{fontSize:12}}>📷</span><span style={{fontSize:11,color:T.text,fontWeight:600}}>{unitDet.it.cameraStatus==="serviced"?(unitDet.it.cameraAutoSkip?"🆗":"✅"):unitDet.it.cameraStatus==="washing"?"🟣":"⬜"}</span>{unitDet.it.cameraAutoSkip&&<span style={{fontSize:9,color:T.accent}}>auto-skip</span>}</div>
+          </div>
+          {/* Admin Actions */}
+          <div style={{display:"flex",gap:4,marginBottom:10,flexWrap:"wrap"}}>
+            {unitDet.it.housingStatus==="serviced"&&<button onClick={async()=>{if(!confirm("Reopen Housing for this unit?"))return;const it=unitDet.it;const steps=it.housingSteps||[];const closingStep=steps[steps.length-1];const newSteps=steps.filter(s=>s!==closingStep);await db.updateInvStatus(it._dbId,{housingStatus:"partial",cameraDetail:{housingSteps:newSteps},stepLog:[{type:"admin_reopen_housing",techId:user.id,techName:user.name,at:new Date().toISOString()}]});const closingJob=unitDet.uj.find(j=>j.component==="housing"&&j.remark==="Housing: "+closingStep&&!j.deleted);if(closingJob)await db.deleteJob(closingJob.id);db.logAdminAction(user.name,"Reopen Housing","",(it.imei||""));setUnitDet(null);}} style={{...bB,padding:"4px 10px",fontSize:10,background:"rgba(245,158,11,0.12)",color:T.warning,border:`1px solid ${T.warning}`,borderRadius:5}}>🔓 Reopen Housing</button>}
+            {unitDet.it.glassStatus==="serviced"&&<button onClick={async()=>{if(!confirm("Reopen Glass for this unit?"))return;await db.updateInvStatus(unitDet.it._dbId,{glassStatus:"service",glassAutoSkip:false,stepLog:[{type:"admin_reopen_glass",techId:user.id,techName:user.name,at:new Date().toISOString()}]});db.logAdminAction(user.name,"Reopen Glass","",(unitDet.it.codeId||unitDet.it.imei));setUnitDet(null);}} style={{...bB,padding:"4px 10px",fontSize:10,background:"rgba(201,168,76,0.12)",color:T.accent,border:`1px solid ${T.accent}`,borderRadius:5}}>🔓 Reopen Glass</button>}
+            {unitDet.it.cameraStatus==="serviced"&&<button onClick={async()=>{if(!confirm("Reopen Camera for this unit?"))return;await db.updateInvStatus(unitDet.it._dbId,{cameraStatus:"washing",cameraAutoSkip:false,stepLog:[{type:"admin_reopen_camera",techId:user.id,techName:user.name,at:new Date().toISOString()}]});db.logAdminAction(user.name,"Reopen Camera","",(unitDet.it.codeId||unitDet.it.imei));setUnitDet(null);}} style={{...bB,padding:"4px 10px",fontSize:10,background:"rgba(139,92,246,0.12)",color:T.purple,border:`1px solid ${T.purple}`,borderRadius:5}}>🔓 Reopen Camera</button>}
+            {(()=>{const qcJob=unitDet.uj.find(j=>(j.component==="full"||!j.component)&&j.status==="completed"&&j.qcBy);const hasQcPass=(unitDet.it.stepLog||[]).some(s=>s.type==="qc_pass");if(!qcJob&&!hasQcPass)return null;return <button onClick={async()=>{if(!confirm(lang==="cn"?"确定撤回QC Pass？将回到QC待检":"Revert QC Pass? Unit will go back to QC pending."))return;if(qcJob)await db.setJobStatus(qcJob.id,"qc-pending",{qcBy:null,redoReason:null,redoRemark:null});const cd=unitDet.it.cameraDetail||{};const newSL=(cd.stepLog||[]).filter(s=>s.type!=="qc_pass");await db.updateInvStatus(unitDet.it._dbId,{cameraDetail:{...cd,stepLog:newSL}});db.logAdminAction(user.name,"Revert QC Pass",qcJob?.id||"",(unitDet.it.codeId||unitDet.it.imei)+" "+unitDet.it.product);setUnitDet(null);}} style={{...bB,padding:"4px 10px",fontSize:10,background:"rgba(16,185,129,0.12)",color:T.success,border:`1px solid ${T.success}`,borderRadius:5}}>↩ Revert QC Pass</button>;})()}
+          </div>
+          {/* Admin Add Job */}
+          <details style={{marginBottom:10}}><summary style={{fontSize:11,color:T.accent,cursor:"pointer",fontWeight:600}}>+ Add Job Record</summary><div style={{padding:8,background:T.inputBg,borderRadius:6,marginTop:4}}>
+            <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:6}}>
+              <select id="ajTech" style={{...bI,width:"auto",fontSize:11,padding:"4px 6px"}}><option value="">Select Tech</option>{techs.filter(t=>t.role!=="admin"&&t.role!=="superadmin").map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select>
+              <select id="ajComp" style={{...bI,width:"auto",fontSize:11,padding:"4px 6px"}}><option value="housing">Housing</option><option value="glass">Glass</option><option value="camera">Camera</option><option value="full">Repair</option></select>
+              <input id="ajRemark" style={{...bI,flex:1,fontSize:11,padding:"4px 6px"}} placeholder="Remark (e.g. HS Svc: Pump Battery)"/>
+            </div>
+            <div style={{display:"flex",gap:4,marginBottom:6,alignItems:"center"}}><input id="ajDate" type="datetime-local" style={{...bI,width:"auto",fontSize:11,padding:"4px 6px"}} defaultValue={new Date().toISOString().slice(0,16)}/></div>
+            <button onClick={async()=>{const techId=document.getElementById("ajTech").value;const comp=document.getElementById("ajComp").value;const remark=document.getElementById("ajRemark").value;const dateVal=document.getElementById("ajDate").value;if(!techId||!remark){alert("Select tech and enter remark");return;}const dateDone=dateVal?new Date(dateVal).toISOString():new Date().toISOString();const it=unitDet.it;await db.createJob({techId,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:[],remark,qty:1,status:"completed",dateIn:dateDone,dateDone,mode:"service",component:comp});db.logAdminAction(user.name,"Admin Add Job","",(it.imei||"")+": "+remark+" (tech: "+techId+", date: "+dateDone+")");setUnitDet(null);}} style={{...pB,padding:"5px 12px",fontSize:11,width:"100%",justifyContent:"center"}}>Add Job</button>
+          </div></details>
+          {/* Tags Summary */}
+          {((unitDet.it.hsServicing||[]).length>0||(unitDet.it.techQc||[]).length>0||(unitDet.it.hsParts||[]).length>0||(unitDet.it.glassServicing||[]).length>0||(unitDet.it.lcdFaults||[]).length>0||(unitDet.it.icmIssues||[]).length>0)&&<div style={{marginBottom:10,padding:10,background:T.inputBg,borderRadius:7}}>
+            <h4 style={{color:T.text,fontSize:12,fontWeight:700,margin:"0 0 6px"}}>Tags</h4>
+            {(unitDet.it.glassServicing||[]).length>0&&<div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:4}}><span style={{fontSize:10,color:T.purple,fontWeight:600}}>🔧 Glass:</span>{unitDet.it.glassServicing.map((o,i)=><span key={i} style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(139,92,246,0.15)",color:T.purple}}>{o}</span>)}</div>}
+            {(unitDet.it.lcdFaults||[]).length>0&&<div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:4}}><span style={{fontSize:10,color:T.danger,fontWeight:600}}>🔴 LCD:</span>{unitDet.it.lcdFaults.map((o,i)=><span key={i} style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(239,68,68,0.15)",color:T.danger}}>{o}</span>)}</div>}
+            {(unitDet.it.hsServicing||[]).length>0&&<div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:4}}><span style={{fontSize:10,color:T.purple,fontWeight:600}}>🔧 HS Svc:</span>{unitDet.it.hsServicing.map((o,i)=>{const tag=typeof o==="object"?o:{name:o};return <span key={i} style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(139,92,246,0.15)",color:T.purple}}>{tag.name}{tag.techName&&<span style={{fontSize:7,color:T.dim}}> -{tag.techName}</span>}</span>;})}</div>}
+            {(unitDet.it.techQc||[]).length>0&&<div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:4}}><span style={{fontSize:10,color:T.qcO,fontWeight:600}}>🔍 Tech QC:</span>{unitDet.it.techQc.map((o,i)=>{const tag=typeof o==="object"?o:{name:o};return <span key={i} style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(249,115,22,0.15)",color:T.qcO}}>{tag.name}{tag.techName&&<span style={{fontSize:7,color:T.dim}}> -{tag.techName}</span>}</span>;})}</div>}
+            {(unitDet.it.hsParts||[]).length>0&&<div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:4}}><span style={{fontSize:10,color:T.accent,fontWeight:600}}>🔩 HS Parts:</span>{unitDet.it.hsParts.map((o,i)=>{const tag=typeof o==="object"?o:{name:o};return <span key={i} style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(201,168,76,0.15)",color:T.accent}}>{tag.name}{tag.techName&&<span style={{fontSize:7,color:T.dim}}> -{tag.techName}</span>}</span>;})}</div>}
+            {(unitDet.it.icmIssues||[]).length>0&&<div style={{display:"flex",gap:3,flexWrap:"wrap",marginBottom:4}}><span style={{fontSize:10,color:T.danger,fontWeight:600}}>⚠ ICM:</span>{unitDet.it.icmIssues.map((o,i)=><span key={i} style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(239,68,68,0.15)",color:T.danger}}>{o}</span>)}</div>}
+            {unitDet.it.hsUnfixable&&<div style={{display:"flex",gap:3,marginBottom:4}}><span style={{fontSize:10,color:T.danger,fontWeight:700}}>⚠ Unfixable: {unitDet.it.hsUnfixable}</span></div>}
+          </div>}
+          {(()=>{const qcLogs=(unitDet.it.stepLog||[]).filter(s=>s.type==="qc_remark");return qcLogs.length>0?<div style={{marginBottom:8}}>{qcLogs.map((s,i)=><div key={i} style={{padding:"5px 8px",borderRadius:5,fontSize:11,fontWeight:600,background:"rgba(245,158,11,0.08)",border:"1px solid rgba(245,158,11,0.2)",color:T.warning,marginBottom:3}}>📋 QC: {s.remark} <span style={{fontWeight:400,color:T.muted,fontSize:10}}>— {s.techName} {fD(s.at)}</span></div>)}</div>:null;})()}
+          <h4 style={{color:T.text,fontSize:13,fontWeight:700,margin:"0 0 6px"}}>{LL.techHistory} ({unitDet.uj.length})</h4><div style={{display:"grid",gap:5}}>{(()=>{const sorted=unitDet.uj.sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn));const superseded=new Set();sorted.forEach(j=>{const laterDup=sorted.find(j2=>j2.id!==j.id&&j2.component===j.component&&j2.remark===j.remark&&new Date(j2.dateIn)>new Date(j.dateIn));if(laterDup)superseded.add(j.id);});return sorted.map(j=>{const tech=techs.find(t=>t.id===j.techId);const isOld=superseded.has(j.id);return (<div key={j.id} style={{background:T.card,borderRadius:7,padding:"9px 11px",border:`1px solid ${T.border}`,borderLeft:`3px solid ${isOld?"rgba(100,116,139,0.3)":j.jobType==="Redo"?T.danger:j.status==="completed"?T.success:T.accent}`,opacity:isOld?0.5:1}}><div style={{display:"flex",gap:3,marginBottom:2}}><TB t={j.jobType}/><SB s={j.status} lang={lang} qcBy={j.qcBy} jobType={j.jobType}/>{isOld&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:8,fontWeight:700,background:"rgba(100,116,139,0.15)",color:T.dim,textDecoration:"line-through"}}>Superseded</span>}<DB j={j}/></div><div style={{color:isOld?T.dim:T.text,fontSize:12,fontWeight:600,marginBottom:1,textDecoration:isOld?"line-through":"none"}}>{tech?.name||j.techId}</div><SJBadges sjs={j.subJobs} lang={lang}/>{j.remark&&<div style={{fontSize:10,color:T.muted,padding:"2px 4px",background:T.inputBg,borderRadius:3,marginBottom:2,textDecoration:isOld?"line-through":"none"}}>{j.remark}</div>}<IB j={j}/>{j.redoReason&&<div style={{fontSize:11,color:T.danger,fontWeight:600,padding:"3px 5px",background:"rgba(239,68,68,0.08)",borderRadius:3,marginBottom:2}}>⚠ {j.redoReason}{j.redoRemark?` — ${j.redoRemark}`:""}{j.redoSubJobs?` [${j.redoSubJobs}]`:""}</div>}<div style={{fontSize:9,color:T.dim}}>In: {fD(j.dateIn)}{j.dateDone?" Done: "+fD(j.dateDone):""}</div></div>);});})()}</div>
+          {unitDet.it.stepLog.length>0&&<><h4 style={{color:T.accent,fontSize:13,fontWeight:700,margin:"12px 0 6px"}}>Step Log ({unitDet.it.stepLog.length})</h4><div style={{display:"grid",gap:3}}>{unitDet.it.stepLog.map((s,i)=><div key={i} style={{display:"flex",gap:6,alignItems:"center",padding:"4px 8px",background:s.type==="qc_remark"?"rgba(245,158,11,0.08)":T.inputBg,borderRadius:4,fontSize:11}}><span style={{fontWeight:600,color:s.type==="qc_remark"?T.warning:s.type.includes("glass")?T.accent:s.type.includes("camera")?T.purple:T.warning,minWidth:60}}>{s.type==="qc_remark"?"📋 QC":s.type.replace("_"," ")}</span><span style={{color:T.text}}>{s.type==="qc_remark"?s.remark:(s.step||s.lens||"")}{s.fix&&s.fix!=="OK"?" "+s.fix:""}</span><span style={{color:T.muted,marginLeft:"auto",fontSize:10}}>{s.techName} {fD(s.at)}</span></div>)}</div></>}
+          {unitDet.it.redoHistory.length>0&&<><h4 style={{color:T.danger,fontSize:13,fontWeight:700,margin:"12px 0 6px"}}>Redo History ({unitDet.it.redoHistory.length})</h4><div style={{display:"grid",gap:3}}>{unitDet.it.redoHistory.map((r,i)=><div key={i} style={{padding:"6px 8px",background:"rgba(239,68,68,0.06)",borderRadius:4,border:"1px solid rgba(239,68,68,0.15)",fontSize:11}}><span style={{fontWeight:600,color:T.danger}}>{r.type}</span> - {r.reason} <span style={{color:T.dim,fontSize:10}}>by {r.flaggedBy} {fD(r.flaggedAt)}</span></div>)}</div></>}
+        </Mod>}
+        {redoSvcUnit&&<Mod title={"Redo "+redoSvcType+" - "+(redoSvcUnit.product)} onClose={()=>setRedoSvcUnit(null)} w="420px">
+          <div style={{padding:10,background:T.inputBg,borderRadius:7,marginBottom:12}}>
+            <div style={{color:T.text,fontWeight:600,fontSize:13}}>{redoSvcUnit.product} {redoSvcUnit.size} {redoSvcUnit.color}</div>
+            <div style={{fontSize:11,fontFamily:"monospace",color:T.muted}}>IMEI: {redoSvcUnit.imei||"-"} | SN: {redoSvcUnit.serial||"-"}</div>
+          </div>
+          <Fld label="Redo Reason"><input style={bI} placeholder="Why needs redo?" value={redoSvcReason} onChange={e=>setRedoSvcReason(e.target.value)} autoFocus/></Fld>
+          <button onClick={handleServiceRedo} disabled={!redoSvcReason} style={{...bB,width:"100%",justifyContent:"center",padding:"10px 14px",fontSize:14,background:T.danger,color:"#fff",borderRadius:8,opacity:redoSvcReason?1:0.4}}>{Ic.rdo} Redo {redoSvcType}</button>
+        </Mod>}
+      </>}
+
+      {tab==="parts"&&PARTS_ENABLED&&<PartsInventoryTab partsInv={partsInv} db={db} inv={inv} lang={lang}/>}
+
+      {tab==="search"&&<><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{LL.search}</h3><ISrch jobs={jobs} techs={techs} inv={inv} db={db} lang={lang}/></>}
+
+      {tab==="techs"&&<><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:0}}>{LL.techs}</h3><button onClick={()=>{setNT({id:db.nextTechId(),name:"",password:"",role:"tech"});setSAT(true);}} style={{...pB,fontSize:11,padding:"5px 9px"}}>{Ic.plus} {LL.addTech}</button></div>
+        <div style={{display:"grid",gap:4}}>{techs.map(t=>{const isAdm=t.role==="admin"||t.role==="superadmin";return (<div key={t.id} style={{background:T.card,borderRadius:6,padding:"8px 12px",border:`1px solid ${isAdm?"rgba(139,92,246,0.3)":T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:24,height:24,borderRadius:5,background:isAdm?`linear-gradient(135deg,${T.purple},${T.danger})`:`linear-gradient(135deg,${T.accent},#6366F1)`,display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:700,fontSize:11}}>{t.name.charAt(0)}</div><div><div style={{display:"flex",alignItems:"center",gap:4}}><span style={{color:T.text,fontWeight:600,fontSize:12}}>{t.name}</span>{t.role==="superadmin"&&<span style={{padding:"1px 4px",borderRadius:3,fontSize:8,fontWeight:700,background:"rgba(239,68,68,0.15)",color:T.danger}}>SUPER</span>}{t.role==="admin"&&<span style={{padding:"1px 4px",borderRadius:3,fontSize:8,fontWeight:700,background:"rgba(139,92,246,0.15)",color:T.purple}}>ADMIN</span>}{t.senior&&<span style={{padding:"1px 4px",borderRadius:3,fontSize:8,fontWeight:700,background:"rgba(201,168,76,0.15)",color:T.accent}}>SENIOR</span>}</div><div style={{color:T.accent,fontSize:10,fontFamily:"monospace"}}>{t.id}</div></div></div><div style={{display:"flex",gap:3}}>{!isAdm&&<button onClick={()=>db.updateTechSenior(t.id,!t.senior)} style={{...gB,padding:"3px 6px",color:t.senior?T.accent:T.dim}} title={t.senior?"Remove Senior":"Make Senior"}>⭐</button>}<button onClick={()=>{setEditNameTech(t.id);setEditName(t.name);}} style={{...gB,padding:"3px 6px"}} title="Edit Name">{Ic.edt}</button><button onClick={()=>{setResetPwTech(t.id);setNewPw("");}} style={{...gB,padding:"3px 6px"}} title={LL.resetPw}>{Ic.key}</button><button onClick={()=>{if(confirm(LL.deleteConfirm))db.removeTech(t.id);}} style={{...dB,padding:"3px 6px"}}>{Ic.del}</button></div></div>);})}</div>
+        {sAT&&<Mod title={LL.addTech} onClose={()=>setSAT(false)}><Fld label="ID" hint="Auto-generated, editable"><input style={bI} value={nT.id} onChange={e=>setNT({...nT,id:e.target.value})}/></Fld><Fld label={LL.name}><input style={bI} value={nT.name} onChange={e=>setNT({...nT,name:e.target.value})}/></Fld><Fld label={LL.pw}><input style={bI} type="password" value={nT.password} onChange={e=>setNT({...nT,password:e.target.value})}/></Fld><Fld label="Role"><select value={nT.role} onChange={e=>setNT({...nT,role:e.target.value})} style={bI}><option value="tech">Technician</option><option value="admin">Admin</option><option value="superadmin">Super Admin</option></select></Fld><button onClick={handleAddTech} style={{...pB,width:"100%",justifyContent:"center"}}>OK</button></Mod>}
+        {resetPwTech&&<Mod title={`${LL.resetPw} — ${resetPwTech}`} onClose={()=>setResetPwTech(null)}><Fld label={LL.newPassword}><input style={bI} type="password" placeholder="New password" value={newPw} onChange={e=>setNewPw(e.target.value)} autoFocus/></Fld><button onClick={handleResetPw} style={{...pB,width:"100%",justifyContent:"center"}}>{LL.save}</button></Mod>}
+        {editNameTech&&<Mod title={`Edit Name — ${editNameTech}`} onClose={()=>setEditNameTech(null)}><Fld label={LL.name}><input style={bI} value={editName} onChange={e=>setEditName(e.target.value)} autoFocus/></Fld><button onClick={handleEditName} style={{...pB,width:"100%",justifyContent:"center"}}>{LL.save}</button></Mod>}
+      </>}
+
+      {tab==="subjobs"&&<><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:0}}>{LL.subjobs}</h3><button onClick={()=>setSAS(true)} style={{...pB,fontSize:11,padding:"5px 9px"}}>{Ic.plus}</button></div><div style={{display:"grid",gap:4}}>{subJobs.map((sj,i)=><div key={i} style={{background:T.card,borderRadius:6,padding:"8px 12px",border:`1px solid ${T.border}`}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:sj.options.length>0?4:0,flexWrap:"wrap",gap:3}}><div style={{display:"flex",alignItems:"center",gap:4}}><div style={{display:"flex",flexDirection:"column",gap:1}}><button onClick={()=>{if(i>0)db.swapSubJobs(i,i-1);}} disabled={i===0} style={{...gB,padding:"1px 4px",fontSize:10,opacity:i===0?0.3:1,lineHeight:1}}>▲</button><button onClick={()=>{if(i<subJobs.length-1)db.swapSubJobs(i,i+1);}} disabled={i===subJobs.length-1} style={{...gB,padding:"1px 4px",fontSize:10,opacity:i===subJobs.length-1?0.3:1,lineHeight:1}}>▼</button></div><div><span style={{color:T.text,fontSize:13,fontWeight:600}}>{sj.name}</span>{sj.cn&&<span style={{color:T.muted,fontSize:11,marginLeft:5}}>({sj.cn})</span>}<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,marginLeft:5,background:sj.tab==="repair"?"rgba(16,185,129,0.12)":sj.tab==="glass"?"rgba(201,168,76,0.12)":sj.tab==="camera"?"rgba(139,92,246,0.12)":sj.tab==="housing"?"rgba(245,158,11,0.12)":sj.tab==="techqc"?"rgba(249,115,22,0.12)":sj.tab==="hsparts"?"rgba(201,168,76,0.12)":"rgba(100,116,139,0.12)",color:sj.tab==="repair"?T.success:sj.tab==="glass"?T.accent:sj.tab==="camera"?T.purple:sj.tab==="housing"?T.warning:sj.tab==="techqc"?T.qcO:sj.tab==="hsparts"?T.accent:T.dim}}>{{housing:"Housing",glass:"Glass",camera:"Camera",repair:"Repair",techqc:"Tech QC",hsparts:"HS Parts"}[sj.tab]||sj.tab}</span></div></div><div style={{display:"flex",gap:2}}><button onClick={()=>{setES(i);setESD({name:sj.name,cn:sj.cn||"",options:sj.options.join(", "),tab:sj.tab||"repair"});}} style={{...gB,padding:"2px 5px"}}>{Ic.edt}</button><button onClick={()=>db.removeSubJob(i)} style={{...dB,padding:"2px 5px"}}>{Ic.del}</button></div></div>{sj.options.length>0&&<div style={{display:"flex",gap:2,flexWrap:"wrap"}}>{sj.options.map((o,oi)=><span key={oi} style={{padding:"2px 4px",borderRadius:2,fontSize:10,background:"rgba(201,168,76,0.1)",color:T.accent}}>{o}</span>)}</div>}</div>)}</div>
+        {sAS&&<Mod title={LL.addSubJob} onClose={()=>setSAS(false)}><Fld label="EN"><input style={bI} value={nS.name} onChange={e=>setNS({...nS,name:e.target.value})}/></Fld><Fld label="中文"><input style={bI} value={nS.cn} onChange={e=>setNS({...nS,cn:e.target.value})}/></Fld><Fld label={LL.options} hint={LL.optionsHint}><input style={bI} value={nS.options} onChange={e=>setNS({...nS,options:e.target.value})}/></Fld><Fld label={lang==="cn"?"显示在哪个服务":"Show in Service Section"}><select style={bI} value={nS.tab} onChange={e=>setNS({...nS,tab:e.target.value})}><option value="housing">Housing Service</option><option value="glass">Glass Service</option><option value="camera">Camera Service</option><option value="repair">Repair</option></select></Fld><button onClick={handleAddSJ} style={{...pB,width:"100%",justifyContent:"center"}}>OK</button></Mod>}
+        {eS!==null&&<Mod title={LL.editSubJob} onClose={()=>setES(null)}><Fld label="EN"><input style={bI} value={eSD.name} onChange={e=>setESD({...eSD,name:e.target.value})}/></Fld><Fld label="中文"><input style={bI} value={eSD.cn} onChange={e=>setESD({...eSD,cn:e.target.value})}/></Fld><Fld label={LL.options}><input style={bI} value={eSD.options} onChange={e=>setESD({...eSD,options:e.target.value})}/></Fld><Fld label={lang==="cn"?"显示在哪个服务":"Show in Service Section"}><select style={bI} value={eSD.tab} onChange={e=>setESD({...eSD,tab:e.target.value})}><option value="housing">Housing Service</option><option value="glass">Glass Service</option><option value="camera">Camera Service</option><option value="repair">Repair</option></select></Fld><button onClick={handleSaveSJ} style={{...pB,width:"100%",justifyContent:"center"}}>{LL.save}</button></Mod>}</>}
+
+      {tab==="jobs"&&<><div className="fxFB" style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:5}}><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:0}}>{LL.allRecords}</h3><div style={{display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}><input type="date" value={fD1} onChange={e=>setFD1(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"4px 6px",colorScheme:"dark"}}/><span style={{color:T.dim,fontSize:11}}>→</span><input type="date" value={fD2} onChange={e=>setFD2(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"4px 6px",colorScheme:"dark"}}/><select value={fT} onChange={e=>setFT(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"4px 6px"}}><option value="all">{LL.allTechs}</option>{techs.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select><StatusFilter value={fSt} onChange={setFSt} lang={lang}/><button onClick={()=>exXL(jobs,techs,fD1,fD2,null,inv)} style={{...gB,padding:"4px 7px",fontSize:10}}>{Ic.dl}</button></div></div>
+        {fJ.length===0?<div style={{textAlign:"center",padding:30,color:T.dim}}>{LL.noJobsFound}</div>:(()=>{
+          const grouped={};fJ.forEach(j=>{const key=j.imei||j.serial||j.id;if(!grouped[key])grouped[key]=[];grouped[key].push(j);});
+          return <div style={{display:"grid",gap:6}}>{Object.entries(grouped).map(([key,unitJobs])=>{
+            const first=unitJobs[0];
+            const invIt=inv.find(i=>(first.imei&&i.imei===first.imei)||(first.serial&&i.serial&&i.serial.toUpperCase()===first.serial.toUpperCase()));
+            const repairJobs=unitJobs.filter(j=>j.component==="full"||!j.component);
+            const glassJobs=unitJobs.filter(j=>j.component==="glass");
+            const cameraJobs=unitJobs.filter(j=>j.component==="camera");
+            const housingJobs=unitJobs.filter(j=>j.component==="housing");
+            const hasRedo=unitJobs.some(j=>j.jobType==="Redo"||j.status==="redo-flagged");
+            const hasDupGlass=glassJobs.length>1;const hasDupCam=cameraJobs.length>1;const hasDupHousing=housingJobs.length>1;const hasDupRepair=repairJobs.length>1;
+            const hasDup=hasDupGlass||hasDupCam||hasDupHousing||hasDupRepair;
+            const borderColor=hasRedo?T.danger:hasDup?T.warning:T.border;
+            const borderWidth=hasRedo||hasDup?"2px":"1px";
+            return <div key={key} style={{background:T.card,borderRadius:8,padding:"10px 12px",border:`${borderWidth} solid ${borderColor}`,borderLeft:`3px solid ${hasRedo?T.danger:hasDup?T.warning:T.accent}`}}>
+              {/* Card Header */}
+              <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:4,flexWrap:"wrap"}}>
+                {invIt?.codeId&&<span style={{padding:"2px 7px",borderRadius:4,fontSize:12,fontWeight:800,background:"rgba(245,158,11,0.18)",color:T.warning}}>{invIt.codeId}</span>}
+                <span style={{color:T.text,fontWeight:600,fontSize:13}}>{first.model}{first.storage?` · ${first.storage}`:""}{first.color?` · ${first.color}`:""}</span>
+                {first.batch&&<span style={{color:T.dim,fontSize:10,fontFamily:"monospace"}}>B:{first.batch}</span>}
+                {hasRedo&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:700,background:"rgba(239,68,68,0.15)",color:T.danger}}>{LL.redoLabel}</span>}
+                {hasDup&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:700,background:"rgba(245,158,11,0.15)",color:T.warning}}>{LL.dupLabel}</span>}
+              </div>
+              <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:4,fontSize:10,fontFamily:"monospace"}}>{first.imei&&<span style={{color:T.accent}}>I:{first.imei}</span>}{first.serial&&<span style={{color:T.purple}}>S:{first.serial}</span>}</div>
+
+              {/* Repair lines */}
+              {repairJobs.map(j=>{const tech=techs.find(t=>t.id===j.techId);return <div key={j.id} style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap",padding:"3px 0",borderBottom:`1px solid ${T.border}`}}>
+                <span style={{fontSize:10,color:T.accent,fontWeight:700,minWidth:14}}>R</span>
+                <span style={{fontSize:11,color:T.text}}>{tech?.name||j.techId}</span>
+                <TB t={j.jobType}/>
+                <SJBadges sjs={j.subJobs} lang={lang}/>
+                <SB s={j.status} lang={lang} qcBy={j.qcBy} jobType={j.jobType}/>
+                {j.waitingParts&&<span style={{fontSize:8,color:T.danger,fontWeight:700}}>PARTS</span>}
+                {j.redoReason&&<span style={{fontSize:9,color:T.danger}}>({j.redoReason})</span>}
+                {j.outsourceTo&&<span style={{fontSize:9,color:T.amber}}>{"-> "}{j.outsourceTo}</span>}
+                <span style={{marginLeft:"auto",display:"flex",gap:2,alignItems:"center",flexShrink:0}}>
+                  <select onChange={e=>{if(e.target.value){handleRevert(j,e.target.value);e.target.value="";}}} style={{background:T.inputBg,border:`1px solid ${T.border}`,borderRadius:3,color:T.dim,fontSize:9,padding:"1px 2px",width:45}}><option value="">&#8617;</option>{STATUSES.filter(s=>s!==j.status).map(s=><option key={s} value={s}>{(SBL[lang]||SBL.en)[s]||s}</option>)}</select>
+                  <button onClick={()=>handleDelete(j)} style={{...dB,padding:"2px 4px",fontSize:9}}>{Ic.del}</button>
+                </span>
+              </div>;})}
+
+              {/* Glass lines */}
+              {glassJobs.length>0&&(()=>{const allDone=glassJobs.every(j=>j.status==="completed");const gTechs=[...new Set(glassJobs.map(j=>j.techId))].map(id=>{const t=techs.find(x=>x.id===id);return t?.name||id;}).join(", ");return allDone?<div style={{display:"flex",alignItems:"center",gap:4,padding:"3px 0",borderBottom:`1px solid ${T.border}`}}><span style={{fontSize:10,color:T.accent,fontWeight:700,minWidth:14}}>G</span><span style={{fontSize:11,color:T.text}}>{gTechs}</span><span style={{fontSize:13,color:T.success}}>✅</span>{invIt?.lcdFault&&<span style={{fontSize:9,color:T.danger}}>LCD: {invIt.lcdFault}</span>}{invIt?.glassShadow&&<span style={{padding:"1px 4px",borderRadius:3,fontSize:9,fontWeight:700,background:invIt.glassShadow==="DS"?"rgba(239,68,68,0.15)":invIt.glassShadow==="MS"?"rgba(245,158,11,0.15)":"rgba(201,168,76,0.15)",color:invIt.glassShadow==="DS"?T.danger:invIt.glassShadow==="MS"?T.warning:T.accent}}>{invIt.glassShadow}</span>}</div>:glassJobs.map(j=>{const tech=techs.find(t=>t.id===j.techId);return <div key={j.id} style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap",padding:"3px 0",borderBottom:`1px solid ${T.border}`}}>
+                <span style={{fontSize:10,color:T.accent,fontWeight:700,minWidth:14}}>G</span>
+                <span style={{fontSize:11,color:T.text}}>{tech?.name||j.techId}</span>
+                <SB s={j.status} lang={lang} qcBy={j.qcBy} jobType={j.jobType}/>
+                {j.remark&&<span style={{fontSize:9,color:T.muted}}>{j.remark.replace("Glass: ","")}</span>}
+                <span style={{marginLeft:"auto",display:"flex",gap:2,alignItems:"center",flexShrink:0}}>
+                  <select onChange={e=>{if(e.target.value){handleRevert(j,e.target.value);e.target.value="";}}} style={{background:T.inputBg,border:`1px solid ${T.border}`,borderRadius:3,color:T.dim,fontSize:9,padding:"1px 2px",width:45}}><option value="">&#8617;</option>{STATUSES.filter(s=>s!==j.status).map(s=><option key={s} value={s}>{(SBL[lang]||SBL.en)[s]||s}</option>)}</select>
+                  <button onClick={()=>handleDelete(j)} style={{...dB,padding:"2px 4px",fontSize:9}}>{Ic.del}</button>
+                </span>
+              </div>;});})()}
+
+              {/* Camera lines */}
+              {cameraJobs.length>0&&(()=>{const allDone=cameraJobs.every(j=>j.status==="completed");const cTechs=[...new Set(cameraJobs.map(j=>j.techId))].map(id=>{const t=techs.find(x=>x.id===id);return t?.name||id;}).join(", ");return allDone?<div style={{display:"flex",alignItems:"center",gap:4,padding:"3px 0",borderBottom:`1px solid ${T.border}`}}><span style={{fontSize:10,color:T.purple,fontWeight:700,minWidth:14}}>C</span><span style={{fontSize:11,color:T.text}}>{cTechs}</span><span style={{fontSize:13,color:T.success}}>✅</span>{invIt?.camPartsNote&&<span style={{fontSize:9,color:T.purple}}>Parts: {invIt.camPartsNote}</span>}</div>:cameraJobs.map(j=>{const tech=techs.find(t=>t.id===j.techId);return <div key={j.id} style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap",padding:"3px 0",borderBottom:`1px solid ${T.border}`}}>
+                <span style={{fontSize:10,color:T.purple,fontWeight:700,minWidth:14}}>C</span>
+                <span style={{fontSize:11,color:T.text}}>{tech?.name||j.techId}</span>
+                {j.remark&&<span style={{fontSize:9,color:T.muted}}>({j.remark.replace("Camera: ","").replace("Camera ","")}) </span>}
+                <SB s={j.status} lang={lang} qcBy={j.qcBy} jobType={j.jobType}/>
+                <span style={{marginLeft:"auto",display:"flex",gap:2,alignItems:"center",flexShrink:0}}>
+                  <select onChange={e=>{if(e.target.value){handleRevert(j,e.target.value);e.target.value="";}}} style={{background:T.inputBg,border:`1px solid ${T.border}`,borderRadius:3,color:T.dim,fontSize:9,padding:"1px 2px",width:45}}><option value="">&#8617;</option>{STATUSES.filter(s=>s!==j.status).map(s=><option key={s} value={s}>{(SBL[lang]||SBL.en)[s]||s}</option>)}</select>
+                  <button onClick={()=>handleDelete(j)} style={{...dB,padding:"2px 4px",fontSize:9}}>{Ic.del}</button>
+                </span>
+              </div>;});})()}
+
+              {/* Housing lines */}
+              {housingJobs.length>0&&(()=>{const allDone=housingJobs.every(j=>j.status==="completed");const hTechs=[...new Set(housingJobs.map(j=>j.techId))].map(id=>{const t=techs.find(x=>x.id===id);return t?.name||id;}).join(", ");const hSteps=housingJobs.map(j=>j.remark?.replace("Housing: ","")||"").filter(Boolean).join(", ");return allDone?<div style={{display:"flex",alignItems:"center",gap:4,padding:"3px 0",borderBottom:`1px solid ${T.border}`}}><span style={{fontSize:10,color:T.warning,fontWeight:700,minWidth:14}}>H</span><span style={{fontSize:11,color:T.text}}>{hTechs}</span>{hSteps&&<span style={{fontSize:9,color:T.muted}}>({hSteps})</span>}<span style={{fontSize:13,color:T.success}}>✅</span></div>:housingJobs.map(j=>{const tech=techs.find(t=>t.id===j.techId);return <div key={j.id} style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap",padding:"3px 0",borderBottom:`1px solid ${T.border}`}}>
+                <span style={{fontSize:10,color:T.warning,fontWeight:700,minWidth:14}}>H</span>
+                <span style={{fontSize:11,color:T.text}}>{tech?.name||j.techId}</span>
+                {j.remark&&<span style={{fontSize:9,color:T.muted}}>({j.remark.replace("Housing: ","")}) </span>}
+                <SB s={j.status} lang={lang} qcBy={j.qcBy} jobType={j.jobType}/>
+                <span style={{marginLeft:"auto",display:"flex",gap:2,alignItems:"center",flexShrink:0}}>
+                  <select onChange={e=>{if(e.target.value){handleRevert(j,e.target.value);e.target.value="";}}} style={{background:T.inputBg,border:`1px solid ${T.border}`,borderRadius:3,color:T.dim,fontSize:9,padding:"1px 2px",width:45}}><option value="">&#8617;</option>{STATUSES.filter(s=>s!==j.status).map(s=><option key={s} value={s}>{(SBL[lang]||SBL.en)[s]||s}</option>)}</select>
+                  <button onClick={()=>handleDelete(j)} style={{...dB,padding:"2px 4px",fontSize:9}}>{Ic.del}</button>
+                </span>
+              </div>;});})()}
+
+              {/* Footer */}
+              <div style={{display:"flex",gap:8,fontSize:9,color:T.dim,flexWrap:"wrap",marginTop:3}}>
+                <span>{Ic.clk} In: {fD(first.dateIn)}</span>
+                {first.dateDone&&<span>{Ic.chk} Done: {fD(first.dateDone)}</span>}
+                <span style={{marginLeft:"auto"}}>{unitJobs.length} job{unitJobs.length>1?"s":""}</span>
+              </div>
+            </div>;})}</div>;})()}
+      </>}
+
+
+
+      {tab==="outsource"&&<><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{LL.outsourceTab} ({outsourcedJobs.length})</h3>{outsourcedJobs.length===0?<div style={{textAlign:"center",padding:30,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`}}>{LL.noOutsource}</div>:<div style={{display:"grid",gap:6}}>{outsourcedJobs.map(j=>{const tech=techs.find(t=>t.id===j.techId);const invIt=inv.find(i=>(j.imei&&i.imei===j.imei));const dOut=j.dateDone?Math.floor((Date.now()-new Date(j.dateDone).getTime())/86400000):daysOpen(j.dateIn);return (<div key={j.id} style={{background:T.card,borderRadius:8,padding:"10px 12px",border:`1px solid ${T.border}`,borderLeft:`3px solid ${T.amber}`}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:6}}><div style={{flex:1,minWidth:160}}><div style={{display:"flex",gap:3,marginBottom:3,flexWrap:"wrap"}}><TB t={j.jobType}/><SB s={j.status} lang={lang} qcBy={j.qcBy} jobType={j.jobType}/>{invIt?.codeId&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:9,fontWeight:700,background:"rgba(245,158,11,0.12)",color:T.warning}}>{invIt.codeId}</span>}<span style={{padding:"1px 4px",borderRadius:3,fontSize:9,fontWeight:700,background:dOut>=7?"rgba(239,68,68,0.15)":"rgba(245,158,11,0.15)",color:dOut>=7?T.danger:T.warning}}>{dOut} {LL.daysOut}</span></div><div style={{color:T.text,fontWeight:600,fontSize:13,marginBottom:1}}>{j.model}{j.storage?` · ${j.storage}`:""}</div><div style={{fontSize:11,fontFamily:"monospace",color:T.muted,marginBottom:2}}>{j.imei&&<span style={{color:T.accent}}>I:{j.imei} </span>}{j.serial&&<span style={{color:T.purple}}>S:{j.serial}</span>}</div><SJBadges sjs={j.subJobs} lang={lang}/><div style={{fontSize:12,color:T.amber,fontWeight:600,marginBottom:2}}>📦 → {j.outsourceTo}</div>{j.outsourceReason&&<div style={{fontSize:11,color:T.muted,marginBottom:2}}>{j.outsourceReason}</div>}{j.qcBy&&<div style={{fontSize:10,color:T.dim}}>{LL.sentBy}: {j.qcBy}</div>}<div style={{fontSize:10,color:T.dim}}>Tech: {tech?.name||j.techId}</div></div><div style={{display:"flex",flexDirection:"column",gap:3,minWidth:140}}><input style={{...bI,fontSize:12,padding:"5px 7px"}} placeholder={LL.returnedFix} value={rcvMap[j.id]||""} onChange={e=>setRcvMap(p=>({...p,[j.id]:e.target.value}))}/><button onClick={()=>{handleMarkReturned(j,rcvMap[j.id]);setRcvMap(p=>{const n={...p};delete n[j.id];return n;});}} style={{...bB,padding:"8px 12px",fontSize:13,background:T.success,color:"#fff",borderRadius:7,justifyContent:"center"}}>{Ic.chk} {LL.markReturned}</button></div></div></div>);})}</div>}</>}
+
+      {tab==="directsell"&&<><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{Ic.tri} {LL.directSell} ({directSellJobs.length})</h3>
+        {directSellJobs.length===0?<div style={{textAlign:"center",padding:30,color:T.dim,background:T.card,borderRadius:10,border:"1px solid "+T.border}}>{LL.noDS}</div>
+        :<div style={{display:"grid",gap:6}}>{directSellJobs.map(j=>{const tch=techs.find(t=>t.id===j.techId);const invIt=inv.find(i=>(j.imei&&i.imei===j.imei)||(j.serial&&i.serial&&i.serial.toUpperCase()===j.serial.toUpperCase()));
+          return (<div key={j.id} style={{background:T.card,borderRadius:8,padding:"10px 12px",border:"1px solid "+T.border,borderLeft:"3px solid "+T.danger}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:6}}>
+              <div style={{flex:1,minWidth:160}}>
+                <div style={{display:"flex",gap:3,marginBottom:3,flexWrap:"wrap"}}><TB t={j.jobType}/><SB s={j.status} lang={lang} qcBy={j.qcBy} jobType={j.jobType}/>{invIt&&invIt.codeId&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:9,fontWeight:700,background:"rgba(245,158,11,0.12)",color:T.warning}}>{invIt.codeId}</span>}</div>
+                <div style={{color:T.text,fontWeight:600,fontSize:13,marginBottom:1}}>{j.model}{j.storage?" "+j.storage:""}{j.color?" "+j.color:""}</div>
+                <div style={{fontSize:11,fontFamily:"monospace",color:T.muted,marginBottom:2}}>{j.imei&&<span style={{color:T.accent}}>I:{j.imei} </span>}{j.serial&&<span style={{color:T.purple}}>S:{j.serial}</span>}</div>
+                <SJBadges sjs={j.subJobs} lang={lang}/>
+                <div style={{fontSize:12,color:T.danger,fontWeight:600,padding:"4px 8px",background:"rgba(239,68,68,0.08)",borderRadius:5,marginBottom:2}}>{Ic.tri} {j.redoReason}</div>
+                {j.redoRemark&&<div style={{fontSize:11,color:T.muted,marginBottom:2}}>{LL.tried}: {j.redoRemark}</div>}
+                {j.qcBy&&<div style={{fontSize:10,color:T.dim}}>{LL.flaggedBy}: {j.qcBy}</div>}
+                <div style={{fontSize:10,color:T.dim}}>Tech: {tch?tch.name:j.techId}</div>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:3,minWidth:140}}>
+                <button onClick={()=>{db.setJobStatus(j.id,"completed",{redoRemark:(j.redoRemark?j.redoRemark+" | ":"")+"Approved Direct Sell by "+user.name});db.logAdminAction(user.name,"Direct Sell Approved",j.id,j.model);}} style={{...bB,padding:"8px 12px",fontSize:13,background:T.danger,color:"#fff",borderRadius:7,justifyContent:"center"}}>{Ic.chk} {LL.confirmDS}</button>
+                <button onClick={()=>{db.setJobStatus(j.id,"redo-flagged",{redoReason:"Reassigned from Direct Sell",redoRemark:j.redoReason||"",redoSeen:false});db.logAdminAction(user.name,"Reassign to Redo",j.id,j.model);}} style={{...bB,padding:"8px 12px",fontSize:13,background:T.accent,color:"#fff",borderRadius:7,justifyContent:"center"}}>{Ic.rdo} {LL.reassign}</button>
+              </div>
+            </div></div>);})}</div>}</>}
+
+      {tab==="repairhouses"&&<><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:0}}>{LL.repairHouses}</h3><button onClick={()=>{setRhForm({name:"",contact:"",address:"",notes:""});setShowAddRH(true);}} style={{...pB,fontSize:11,padding:"5px 9px"}}>{Ic.plus} {LL.addRH}</button></div><div style={{display:"grid",gap:4}}>{repairHouses.map(r=><div key={r.id} style={{background:T.card,borderRadius:6,padding:"10px 12px",border:`1px solid ${T.border}`}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6}}><div><div style={{color:T.text,fontWeight:600,fontSize:14}}>{r.name}</div>{r.contact&&<div style={{fontSize:11,color:T.muted}}>📞 {r.contact}</div>}{r.address&&<div style={{fontSize:11,color:T.muted}}>📍 {r.address}</div>}{r.notes&&<div style={{fontSize:10,color:T.dim,marginTop:2}}>{r.notes}</div>}</div><div style={{display:"flex",gap:2}}><button onClick={()=>{setEditRH(r.id);setRhForm({name:r.name,contact:r.contact||"",address:r.address||"",notes:r.notes||""});}} style={{...gB,padding:"3px 6px"}}>{Ic.edt}</button><button onClick={()=>{if(confirm(LL.deleteConfirm))db.removeRepairHouse(r.id);}} style={{...dB,padding:"3px 6px"}}>{Ic.del}</button></div></div></div>)}</div>
+        {showAddRH&&<Mod title={LL.addRH} onClose={()=>setShowAddRH(false)}><Fld label={LL.name}><input style={bI} value={rhForm.name} onChange={e=>setRhForm(p=>({...p,name:e.target.value}))}/></Fld><Fld label={LL.contact}><input style={bI} value={rhForm.contact} onChange={e=>setRhForm(p=>({...p,contact:e.target.value}))}/></Fld><Fld label={LL.address}><input style={bI} value={rhForm.address} onChange={e=>setRhForm(p=>({...p,address:e.target.value}))}/></Fld><Fld label={LL.notes}><textarea style={{...bI,minHeight:40,resize:"vertical"}} value={rhForm.notes} onChange={e=>setRhForm(p=>({...p,notes:e.target.value}))}/></Fld><button onClick={()=>{if(!rhForm.name.trim())return;db.addRepairHouse(rhForm);setShowAddRH(false);}} style={{...pB,width:"100%",justifyContent:"center"}}>{LL.save}</button></Mod>}
+        {editRH&&<Mod title={LL.repairHouses} onClose={()=>setEditRH(null)}><Fld label={LL.name}><input style={bI} value={rhForm.name} onChange={e=>setRhForm(p=>({...p,name:e.target.value}))}/></Fld><Fld label={LL.contact}><input style={bI} value={rhForm.contact} onChange={e=>setRhForm(p=>({...p,contact:e.target.value}))}/></Fld><Fld label={LL.address}><input style={bI} value={rhForm.address} onChange={e=>setRhForm(p=>({...p,address:e.target.value}))}/></Fld><Fld label={LL.notes}><textarea style={{...bI,minHeight:40,resize:"vertical"}} value={rhForm.notes} onChange={e=>setRhForm(p=>({...p,notes:e.target.value}))}/></Fld><button onClick={()=>{if(!rhForm.name.trim())return;db.updateRepairHouse(editRH,rhForm);setEditRH(null);}} style={{...pB,width:"100%",justifyContent:"center"}}>{LL.save}</button></Mod>}
+      </>}
+
+      {tab==="remarkcodes"&&<><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:0}}>{LL.remarkCodes}</h3><button onClick={()=>{setRcForm({code:"",meaning_en:"",meaning_cn:""});setShowAddRC(true);}} style={{...pB,fontSize:11,padding:"5px 9px"}}>{Ic.plus} {LL.addCode}</button></div><div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,overflow:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr style={{borderBottom:`1px solid ${T.border}`}}>{[LL.code,LL.meaningEn,LL.meaningCn,""].map(h=><th key={h} style={{padding:"7px 8px",textAlign:"left",color:T.dim,fontSize:10,fontWeight:600}}>{h}</th>)}</tr></thead><tbody>{remarkCodes.map(rc=><tr key={rc.id} style={{borderBottom:`1px solid ${T.border}`}}><td style={{padding:"6px 8px",color:T.accent,fontSize:12,fontWeight:700,fontFamily:"monospace"}}>{rc.code}</td><td style={{padding:"6px 8px",color:T.text,fontSize:11}}>{rc.meaning_en}</td><td style={{padding:"6px 8px",color:T.muted,fontSize:11}}>{rc.meaning_cn||"—"}</td><td style={{padding:"6px 8px"}}><div style={{display:"flex",gap:2}}><button onClick={()=>{setEditRC(rc.id);setRcForm({code:rc.code,meaning_en:rc.meaning_en,meaning_cn:rc.meaning_cn||""});}} style={{...gB,padding:"3px 6px"}}>{Ic.edt}</button><button onClick={()=>{if(confirm(LL.deleteConfirm))db.removeRemarkCode(rc.id);}} style={{...dB,padding:"3px 6px"}}>{Ic.del}</button></div></td></tr>)}</tbody></table></div>
+        {showAddRC&&<Mod title={LL.addCode} onClose={()=>setShowAddRC(false)}><Fld label={LL.code}><input style={bI} value={rcForm.code} onChange={e=>setRcForm(p=>({...p,code:e.target.value.toUpperCase()}))} placeholder="A, G, 1G, DS, KB..."/></Fld><Fld label={LL.meaningEn}><input style={bI} value={rcForm.meaning_en} onChange={e=>setRcForm(p=>({...p,meaning_en:e.target.value}))} placeholder="Grade A Housing"/></Fld><Fld label={LL.meaningCn}><input style={bI} value={rcForm.meaning_cn} onChange={e=>setRcForm(p=>({...p,meaning_cn:e.target.value}))} placeholder="壳A级"/></Fld><button onClick={()=>{if(!rcForm.code.trim()||!rcForm.meaning_en.trim())return;db.addRemarkCode(rcForm);setShowAddRC(false);}} style={{...pB,width:"100%",justifyContent:"center"}}>{LL.save}</button></Mod>}
+        {editRC&&<Mod title={LL.remarkCodes} onClose={()=>setEditRC(null)}><Fld label={LL.code}><input style={bI} value={rcForm.code} onChange={e=>setRcForm(p=>({...p,code:e.target.value.toUpperCase()}))}/></Fld><Fld label={LL.meaningEn}><input style={bI} value={rcForm.meaning_en} onChange={e=>setRcForm(p=>({...p,meaning_en:e.target.value}))}/></Fld><Fld label={LL.meaningCn}><input style={bI} value={rcForm.meaning_cn} onChange={e=>setRcForm(p=>({...p,meaning_cn:e.target.value}))}/></Fld><button onClick={()=>{if(!rcForm.code.trim()||!rcForm.meaning_en.trim())return;db.updateRemarkCode(editRC,rcForm);setEditRC(null);}} style={{...pB,width:"100%",justifyContent:"center"}}>{LL.save}</button></Mod>}
+      </>}
+
+      {tab==="processing"&&<>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:5}}>
+          <h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:0}}>{LL.processing}</h3>
+          <div style={{display:"flex",gap:8,fontSize:11}}>
+            <span style={{color:T.warning,fontWeight:600}}>{procWorking} {LL.inWork}</span>
+            <span style={{color:T.success,fontWeight:600}}>{procReady} {LL.ready}</span>
+            <span style={{color:T.dim}}>{procUnits.length} {LL.totalLabel}</span>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:4,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
+          <div style={{position:"relative",flex:1,minWidth:140}}><input style={{...bI,paddingLeft:38,fontSize:12}} placeholder={LL.searchIMEI} value={procSearch} onChange={e=>setProcSearch(e.target.value)}/><div style={{position:"absolute",left:7,top:"50%",transform:"translateY(-50%)",color:T.dim}}>{Ic.srch}</div></div>
+          <select value={procBatch} onChange={e=>setProcBatch(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px"}}>
+            <option value="all">{LL.allBatchesLabel}</option>
+            {[...new Set(inv.map(i=>i.batchId))].filter(Boolean).map(b=><option key={b} value={b}>{b}</option>)}
+          </select>
+          <select value={procStatus} onChange={e=>setProcStatus(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px"}}>
+            <option value="all">{LL.allStatus}</option>
+            <option value="qcready">{LL.qcReady2}</option>
+            <option value="inwork">{LL.inWork}</option>
+            <option value="redo">Redo</option>
+          </select>
+        </div>
+        {(()=>{
+          let list=procUnits.filter(u=>{if(procBatch!=="all"&&u.batchId!==procBatch)return false;if(procSearch){const q=procSearch.toLowerCase();if(!((u.codeId||"").toLowerCase().includes(q)||(u.imei||"").includes(q)||(u.serial||"").toLowerCase().includes(q)||(u.product||"").toLowerCase().includes(q)))return false;}if(procStatus==="qcready"&&!u.allDone)return false;if(procStatus==="inwork"&&u.allDone)return false;if(procStatus==="redo"&&u.rSt!=="redo-flagged")return false;return true;}).sort((a,b)=>b.days-a.days);
+          const stIcon=(st)=>st==="serviced"?"✅":st==="washing"?"🟣":st==="service"?"🟡":st==="partial"?"☑️":st==="completed"?"✅":st==="qc-pending"?"🟠":st==="redo-flagged"?"🔴":st==="in-progress"?"⏳":st==="outsourced"?"📦":"⬜";
+          return <div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,overflow:"auto",maxHeight:"70vh"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",minWidth:760}}>
+              <thead style={{position:"sticky",top:0,zIndex:5,background:T.card}}><tr style={{borderBottom:`1px solid ${T.border}`}}>
+                {["Grade","1st","Model","Batch","Warehouse",LL.days,"R","G","C","H",LL.statusLabel].map(h=><th key={h} style={{padding:"8px 6px",textAlign:[LL.days,"R","G","C","H"].includes(h)?"center":"left",color:T.dim,fontSize:9,fontWeight:600,textTransform:"uppercase"}}>{h}</th>)}
+              </tr></thead>
+              <tbody>{list.map(u=>{
+                const dayColor=u.days>=5?T.danger:u.days>=3?T.warning:T.dim;
+                const status=u.allDone?LL.qcReady2:u.rSt==="redo-flagged"?"Redo":u.rSt==="outsourced"?"Outsourced":LL.inWork;
+                const statusColor=u.allDone?T.success:u.rSt==="redo-flagged"?T.danger:u.rSt==="outsourced"?T.amber:T.warning;
+                return <tr key={u._dbId} style={{borderBottom:`1px solid ${T.border}`,background:u.allDone?"rgba(16,185,129,0.03)":u.rSt==="redo-flagged"?"rgba(239,68,68,0.03)":u.days>=5?"rgba(239,68,68,0.02)":"transparent"}}>
+                  <td style={{padding:"6px",color:T.warning,fontWeight:700,fontSize:12,fontFamily:"monospace"}}>{u.codeId||"—"}</td>
+                  <td style={{padding:"6px",fontSize:10,color:T.muted}}>{(()=>{const sl=(u.cameraDetail||{}).stepLog||[];const firstStep=sl.find(s=>s.type==="housing"&&(s.step||"").includes("1st"));if(!firstStep)return"—";const tn=firstStep.techName||(techs.find(t=>t.id===firstStep.techId)||{}).name||"";return <span style={{fontWeight:600,color:T.text}}>{tn}</span>;})()}</td>
+                  <td style={{padding:"6px",color:T.text,fontSize:11}}>{u.product}{u.size?` · ${u.size}`:""}{u.color?` · ${u.color}`:""}{u.newColor&&u.newColor!==u.color?<span style={{marginLeft:4,padding:"1px 4px",borderRadius:3,fontSize:9,fontWeight:700,background:"rgba(139,92,246,0.15)",color:T.purple}}>→{u.newColor}</span>:""}</td>
+                  <td style={{padding:"6px",color:T.dim,fontSize:10,fontFamily:"monospace"}}>{u.batchId}</td>
+                  <td style={{padding:"6px"}}>{(()=>{const oi=(orderItems||[]).find(x=>x.inventory_id===u._dbId);if(!oi)return <span style={{color:T.dim,fontSize:9}}>—</span>;const ord=(buyerOrders||[]).find(x=>x.id===oi.order_id);const buyer=(buyers||[]).find(x=>x.id===ord?.buyer_id);const pColor=ord?.priority==="urgent"?T.danger:ord?.priority==="rush"?T.warning:T.accent;return <span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:`${pColor}18`,color:pColor}}>{buyer?.name||ord?.order_no||"—"}</span>;})()}</td>
+                  <td style={{padding:"6px",textAlign:"center",fontWeight:700,fontSize:13,color:dayColor}}>{u.days}</td>
+                  <td style={{padding:"6px",textAlign:"center",fontSize:14}} title={"Repair: "+u.rSt}>{stIcon(u.rSt)}</td>
+                  <td style={{padding:"6px",textAlign:"center",fontSize:14}} title={"Glass: "+u.gSt+(u.glassAutoSkip?" (auto-skipped)":"")+(u.lcdFault?" LCD:"+u.lcdFault:"")+(u.glassShadow?" Shadow:"+u.glassShadow:"")}>{u.glassAutoSkip&&u.gSt==="serviced"?"🆗":stIcon(u.gSt)}{(u.lcdFault||(u.lcdFaults||[]).length>0)&&<span style={{fontSize:8,color:T.danger}}>⚠</span>}{u.glassShadow&&u.glassShadow!=="SS"&&<span style={{fontSize:8,color:T.warning}}>S</span>}</td>
+                  <td style={{padding:"6px",textAlign:"center",fontSize:14}} title={"Camera: "+u.cSt+(u.cameraAutoSkip?" (auto-skipped)":"")}>{u.cameraAutoSkip&&u.cSt==="serviced"?"🆗":stIcon(u.cSt)}</td>
+                  <td style={{padding:"6px",textAlign:"center",fontSize:14}} title={"Housing: "+u.hSt}>{stIcon(u.hSt)}</td>
+                  <td style={{padding:"6px"}}><span style={{padding:"2px 6px",borderRadius:3,fontSize:10,fontWeight:600,background:`${statusColor}18`,color:statusColor}}>{status}</span></td>
+                </tr>;
+              })}</tbody>
+            </table>
+          </div>;
+        })()}
+      </>}
+
+      {tab==="commrates"&&(()=>{
+        const rates=commRates||[];
+        const sections=["Housing","Glass","Camera","QC","Repair","HS Servicing","Tech QC","HS Parts"];
+        return <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:0}}>{LL.commRates}</h3>
+            <button onClick={()=>{const section=prompt(LL.sectionPrompt);if(!section)return;const step=prompt(LL.stepPrompt);if(!step)return;const rate=prompt(LL.ratePrompt);if(!rate)return;db.addCommRate({section:section.trim(),step:step.trim(),rate:parseFloat(rate)||0});}} style={{...pB,fontSize:11,padding:"5px 9px"}}>{Ic.plus} {LL.addRate}</button>
+          </div>
+          {sections.map(sec=>{const secRates=rates.filter(r=>r.section===sec);if(secRates.length===0)return null;return <div key={sec} style={{marginBottom:12}}>
+            <h4 style={{color:T.accent,fontSize:12,fontWeight:700,margin:"0 0 6px"}}>{sec}</h4>
+            <div style={{background:T.card,borderRadius:8,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+              <table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr style={{borderBottom:`1px solid ${T.border}`}}>
+                <th style={{padding:"6px 8px",textAlign:"left",color:T.dim,fontSize:10}}>{LL.stepName}</th>
+                <th style={{padding:"6px 8px",textAlign:"right",color:T.dim,fontSize:10}}>{LL.rateRM}</th>
+                <th style={{padding:"6px 8px",textAlign:"center",color:T.dim,fontSize:10,width:80}}></th>
+              </tr></thead><tbody>{secRates.map(r=><tr key={r.id} style={{borderBottom:`1px solid ${T.border}`}}>
+                <td style={{padding:"8px",color:T.text,fontSize:12,fontWeight:500}}>{r.step}</td>
+                <td style={{padding:"8px",textAlign:"right",color:T.success,fontSize:13,fontWeight:700}}>RM {Number(r.rate).toFixed(2)}</td>
+                <td style={{padding:"8px",textAlign:"center"}}><div style={{display:"flex",gap:2,justifyContent:"center"}}>
+                  <button onClick={()=>{const v=prompt("New rate (RM):",r.rate);if(v===null)return;db.updateCommRate(r.id,{rate:parseFloat(v)||0});}} style={{...gB,padding:"3px 6px",fontSize:10}}>{Ic.edt}</button>
+                  <button onClick={()=>{if(confirm(LL.deleteRate))db.removeCommRate(r.id);}} style={{...dB,padding:"3px 6px",fontSize:10}}>{Ic.del}</button>
+                </div></td>
+              </tr>)}</tbody></table>
+            </div>
+          </div>;})}
+          {rates.length===0&&<div style={{textAlign:"center",padding:30,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`}}>{LL.noRatesSet}</div>}
+          <div style={{marginTop:16,padding:12,background:T.inputBg,borderRadius:8,border:`1px solid ${T.border}`}}>
+            <h4 style={{color:T.text,fontSize:12,fontWeight:700,margin:"0 0 8px"}}>{LL.quickSetup}</h4>
+            <p style={{color:T.dim,fontSize:11,margin:"0 0 8px"}}>{LL.quickSetupDesc}</p>
+            <button onClick={()=>{const existing=new Set(rates.map(r=>r.section+":"+r.step));const secMap={housing:"Housing",glass:"Glass",camera:"Camera",techqc:"Tech QC",hsparts:"HS Parts",repair:"Repair",system:"QC"};subJobs.forEach(sj=>{const sec=secMap[sj.tab]||sj.tab;sj.options.forEach(o=>{if(!existing.has(sec+":"+o)){db.addCommRate({section:sec,step:o,rate:0});}});});const builtIn=[["Camera","Wash"],["Camera","Skip to Inspect"],["Camera","Mark OK"],["Glass","Frame 打支架"],["Glass","Mark OK"]];builtIn.forEach(([sec,step])=>{if(!existing.has(sec+":"+step))db.addCommRate({section:sec,step,rate:0});});}} style={{...pB,padding:"8px 14px",fontSize:12}}>{LL.importSJOpts}</button>
+          </div>
+        </div>;
+      })()}
+
+      {tab==="commreport"&&(()=>{
+        const rates=commRates||[];
+        const rateMap={};rates.forEach(r=>{rateMap[r.section+":"+r.step]=Number(r.rate)||0;});
+        const completedJobs=jobs.filter(j=>j.status==="completed"&&j.dateDone&&inRange(j.dateDone,commD1,commD2)&&j.jobType!=="Redo");
+        const getRate=(j)=>{const rmk=j.remark||"";if(j.component==="housing"){const step=rmk.replace("Housing: ","").replace("HS Svc: ","").replace("HS Parts: ","").replace("Tech QC: ","");const sec=rmk.startsWith("HS Svc")?"HS Servicing":rmk.startsWith("HS Parts")?"HS Parts":rmk.startsWith("Tech QC")?"Tech QC":"Housing";return rateMap[sec+":"+step]||0;}if(j.component==="glass"){const step=rmk.replace("Glass: ","").replace("Glass Svc: ","");const sec=rmk.startsWith("Glass Svc")?"Glass":"Glass";return rateMap[sec+":"+step]||0;}if(j.component==="camera"){const step=rmk.replace("Camera: ","").replace("Camera ","");return rateMap["Camera:"+step]||0;}if(!j.component||j.component==="full"){const sjs=(j.subJobs||[]).map(s=>typeof s==="object"?s.name:s);let total=0;sjs.forEach(s=>{total+=rateMap["Repair:"+s]||0;});return total||rateMap["Repair:Per unit"]||0;}return 0;};
+        const techComm={};
+        // Group repair jobs by unit per tech, other jobs individually
+        const repairByTechUnit={};
+        completedJobs.forEach(j=>{const t=techs.find(x=>x.id===j.techId);const name=t?t.name:j.techId;if(!techComm[name])techComm[name]={total:0,items:[]};const rate=getRate(j);
+          if(rate>0){if(!j.component||j.component==="full"){const unitKey=name+":"+(j.imei||j.serial||j.id);if(!repairByTechUnit[unitKey])repairByTechUnit[unitKey]={name,rate,model:j.model,date:j.dateDone};else repairByTechUnit[unitKey].rate+=rate;}else{techComm[name].total+=rate;techComm[name].items.push({remark:j.remark||j.model,rate,date:j.dateDone});}}});
+        Object.values(repairByTechUnit).forEach(r=>{if(!techComm[r.name])techComm[r.name]={total:0,items:[]};techComm[r.name].total+=r.rate;techComm[r.name].items.push({remark:"Repair: "+r.model,rate:r.rate,date:r.date});});
+        const sorted=Object.entries(techComm).sort((a,b)=>b[1].total-a[1].total);
+        const grandTotal=sorted.reduce((s,[,v])=>s+v.total,0);
+        const setCommPeriod=(p)=>{const now=new Date();if(p==="daily"){setCommD1(td());setCommD2(td());}else if(p==="weekly"){const d=new Date(now);d.setDate(d.getDate()-d.getDay());setCommD1(d.toISOString().split("T")[0]);setCommD2(td());}else if(p==="monthly"){setCommD1(now.toISOString().slice(0,7)+"-01");setCommD2(td());}};
+        return <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,flexWrap:"wrap",gap:5}}>
+            <h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:0}}>{LL.commReport}</h3>
+            <span style={{color:T.success,fontSize:13,fontWeight:700}}>{LL.totalLabel}: RM {grandTotal.toFixed(2)}</span>
+          </div>
+          <div style={{display:"flex",gap:4,marginBottom:10,alignItems:"center",flexWrap:"wrap"}}>
+            <div style={{display:"flex",borderRadius:6,overflow:"hidden",border:`1px solid ${T.border}`}}>{[["daily",LL.daily],["weekly",LL.weekly],["monthly",LL.monthly]].map(([k,l])=><button key={k} onClick={()=>setCommPeriod(k)} style={{padding:"5px 12px",fontSize:11,fontWeight:600,background:commD1===td()&&k==="daily"?"rgba(201,168,76,0.15)":"transparent",color:T.dim,border:"none",cursor:"pointer"}}>{l}</button>)}</div>
+            <input type="date" value={commD1} onChange={e=>setCommD1(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px"}}/>
+            <span style={{color:T.dim,fontSize:11}}>→</span>
+            <input type="date" value={commD2} onChange={e=>setCommD2(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px"}}/>
+            <span style={{color:T.dim,fontSize:10}}>{completedJobs.length} jobs</span>
+          </div>
+          {sorted.length===0?<div style={{textAlign:"center",padding:30,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`}}>{LL.noCommData}</div>
+          :<div style={{display:"grid",gap:8}}>{sorted.map(([name,data])=><div key={name} style={{background:T.card,borderRadius:8,padding:"10px 12px",border:`1px solid ${T.border}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <span style={{color:T.text,fontWeight:700,fontSize:14}}>{name}</span>
+              <span style={{color:T.success,fontWeight:800,fontSize:16}}>RM {data.total.toFixed(2)}</span>
+            </div>
+            <div style={{display:"grid",gap:2}}>{(()=>{const grouped={};data.items.forEach(it=>{const k=it.remark;if(!grouped[k])grouped[k]={count:0,rate:it.rate,total:0};grouped[k].count++;grouped[k].total+=it.rate;});return Object.entries(grouped).sort((a,b)=>b[1].total-a[1].total).map(([k,v])=><div key={k} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"3px 0",borderBottom:`1px solid ${T.border}`}}>
+              <span style={{fontSize:11,color:T.muted,flex:1}}>{k}</span>
+              <span style={{fontSize:10,color:T.dim,minWidth:30,textAlign:"center"}}>{v.count}x</span>
+              <span style={{fontSize:10,color:T.dim,minWidth:50,textAlign:"right"}}>@{v.rate.toFixed(2)}</span>
+              <span style={{fontSize:11,color:T.success,fontWeight:600,minWidth:60,textAlign:"right"}}>RM {v.total.toFixed(2)}</span>
+            </div>);})()}</div>
+          </div>)}</div>}
+        </div>;
+      })()}
+
+      {tab==="feedback"&&(()=>{const fbList=feedback||[];return <div>
+        <h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{LL.feedbackTitle}</h3>
+        {fbList.length===0?<div style={{textAlign:"center",padding:30,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`}}>{LL.feedbackNone}</div>
+        :<div style={{display:"grid",gap:6}}>{fbList.map(f=>{
+          const tC=f.type==="bug"?T.danger:f.type==="suggestion"?T.accent:T.purple;
+          const bg=f.type==="bug"?"rgba(239,68,68,0.15)":f.type==="suggestion"?"rgba(201,168,76,0.15)":"rgba(139,92,246,0.15)";
+          return <div key={f.id} style={{background:T.card,borderRadius:8,padding:"10px 12px",border:`1px solid ${f.status==="resolved"?T.success:T.border}`,borderLeft:`3px solid ${tC}`,opacity:f.status==="resolved"?0.6:1}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6}}>
+              <div style={{flex:1}}>
+                <div style={{display:"flex",gap:4,marginBottom:4,flexWrap:"wrap"}}>
+                  <span style={{padding:"2px 6px",borderRadius:3,fontSize:10,fontWeight:600,background:bg,color:tC}}>{f.type==="bug"?LL.feedbackBug:f.type==="suggestion"?LL.feedbackSuggestion:LL.feedbackOther}</span>
+                  <span style={{fontSize:11,color:T.text,fontWeight:600}}>{f.user_name}</span>
+                  <span style={{fontSize:10,color:T.dim}}>{fD(f.created_at)}</span>
+                  {f.status==="resolved"&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(16,185,129,0.12)",color:T.success}}>{LL.feedbackResolved}</span>}
+                </div>
+                <div style={{fontSize:12,color:T.text,lineHeight:1.5,whiteSpace:"pre-wrap"}}>{f.message}</div>
+                {f.file_url&&<div style={{marginTop:4,display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}><a href={f.file_url} target="_blank" rel="noopener noreferrer" style={{color:T.accent,fontSize:11,textDecoration:"none"}}>📎 {lang==="cn"?"查看附件":"View Attachment"}</a><button onClick={async()=>{if(!confirm(lang==="cn"?"删除附件？":"Delete attachment?"))return;await db.deleteFeedbackFile(f.id,f.file_url);}} style={{background:"rgba(239,68,68,0.08)",border:"1px solid rgba(239,68,68,0.2)",borderRadius:4,color:T.danger,cursor:"pointer",fontSize:10,padding:"2px 8px"}}>🗑 {lang==="cn"?"删除":"Delete"}</button>{f.file_url.match(/\.(jpg|jpeg|png|gif|webp)$/i)&&<img src={f.file_url} style={{display:"block",maxWidth:"100%",maxHeight:200,borderRadius:6,marginTop:4,border:`1px solid ${T.border}`}}/>}</div>}
+              </div>
+              <div style={{display:"flex",gap:2,flexShrink:0}}>
+                {f.status!=="resolved"
+                  ?<button onClick={()=>db.updateFeedbackStatus(f.id,"resolved")} style={{...bB,padding:"4px 8px",fontSize:10,background:T.success,color:"#fff",borderRadius:5}}>{LL.feedbackResolve}</button>
+                  :<button onClick={()=>db.updateFeedbackStatus(f.id,"open")} style={{...gB,padding:"4px 8px",fontSize:10}}>{LL.feedbackReopen}</button>}
+              </div>
+            </div>
+          </div>;})}</div>}
+      </div>;})()}
+
+      {tab==="activity"&&<><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{LL.activity}</h3>{adminLogs.length===0?<div style={{textAlign:"center",padding:30,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`}}>{LL.noActivity}</div>:<div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,overflow:"auto",marginBottom:14}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:500}}><thead><tr style={{borderBottom:`1px solid ${T.border}`}}>{["Time","Admin","Action","Job ID","Detail"].map(h=><th key={h} style={{padding:"7px 6px",textAlign:"left",color:T.dim,fontSize:9,fontWeight:600,textTransform:"uppercase"}}>{h}</th>)}</tr></thead><tbody>{adminLogs.slice(0,100).map(l=><tr key={l.id} style={{borderBottom:`1px solid ${T.border}`}}><td style={{padding:"5px 6px",color:T.muted,fontSize:10,whiteSpace:"nowrap"}}>{fD(l.created_at)}</td><td style={{padding:"5px 6px",color:T.text,fontSize:11}}>{l.admin_name}</td><td style={{padding:"5px 6px",fontSize:11}}><span style={{padding:"1px 5px",borderRadius:3,fontSize:10,fontWeight:600,background:l.action==="QC Pass"?"rgba(16,185,129,0.12)":l.action==="Needs Redo"?"rgba(239,68,68,0.12)":l.action==="Delete"?"rgba(239,68,68,0.2)":l.action==="Outsource"?"rgba(217,119,6,0.12)":l.action==="Restore"?"rgba(139,92,246,0.12)":"rgba(201,168,76,0.12)",color:l.action==="QC Pass"?T.success:l.action==="Needs Redo"||l.action==="Delete"?T.danger:l.action==="Outsource"?T.amber:l.action==="Restore"?T.purple:T.accent}}>{l.action}</span></td><td style={{padding:"5px 6px",color:T.dim,fontSize:10,fontFamily:"monospace"}}>{l.job_id||"—"}</td><td style={{padding:"5px 6px",color:T.muted,fontSize:10,maxWidth:200}}>{l.detail||"—"}</td></tr>)}</tbody></table></div>}
+        {deletedJobs.length>0&&<><h3 style={{color:T.danger,fontSize:13,fontWeight:700,margin:"10px 0 6px"}}>🗑 {LL.deleted} ({deletedJobs.length})</h3><div style={{display:"grid",gap:4}}>{deletedJobs.map(j=>{const tech=techs.find(t=>t.id===j.techId);return <div key={j.id} style={{background:T.card,borderRadius:6,padding:"8px 10px",border:`1px solid ${T.border}`,opacity:0.7}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:4}}><div><div style={{display:"flex",gap:3,marginBottom:2}}><TB t={j.jobType}/><span style={{padding:"1px 4px",borderRadius:2,fontSize:9,background:"rgba(239,68,68,0.15)",color:T.danger}}>{LL.deleted}</span></div><div style={{color:T.text,fontSize:12,fontWeight:600}}>{j.model}{j.storage?` ${j.storage}`:""}</div><div style={{fontSize:10,color:T.muted}}>{tech?.name||j.techId} | {j.imei||j.serial||"—"} | {fD(j.dateIn)}</div></div><button onClick={()=>{db.restoreJob(j.id);db.logAdminAction(user.name,"Restore",j.id,`${j.model} ${j.imei||j.serial||""}`);}} style={{...bB,padding:"5px 10px",fontSize:11,background:T.purple,color:"#fff"}}>{Ic.rdo} {LL.restore}</button></div></div>;})}</div></>}</>}
+
+      {tab==="chat"&&(()=>{const msgs=chatMsgs||[];const pinned=msgs.filter(m=>m.pinned);const unpinned=msgs.filter(m=>!m.pinned);const handleSend=async()=>{if(!chatMsg.trim())return;await db.sendChat(user.id,user.name,chatMsg.trim(),chatRef.trim());setChatMsg("");setChatRef("");};return <div>
+        <h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{LL.chatTitle}</h3>
+        <div style={{background:T.card,borderRadius:10,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
+          <div style={{display:"flex",gap:6,marginBottom:6}}><input style={{...bI,flex:1,fontSize:13}} placeholder={LL.typeMsg} value={chatMsg} onChange={e=>setChatMsg(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleSend()}/><button onClick={handleSend} style={{...pB,padding:"8px 14px",fontSize:12}} disabled={!chatMsg.trim()}>{LL.send}</button></div>
+          <input style={{...bI,fontSize:11,padding:"5px 8px"}} placeholder={LL.unitRefHint} value={chatRef} onChange={e=>setChatRef(e.target.value)}/>
+        </div>
+        {pinned.length>0&&<div style={{marginBottom:12}}><div style={{color:T.warning,fontSize:11,fontWeight:700,marginBottom:4}}>📌 {LL.pinned}</div>{pinned.map(m=><div key={m.id} style={{padding:"8px 10px",background:"rgba(245,158,11,0.06)",borderRadius:6,border:`1px solid rgba(245,158,11,0.2)`,marginBottom:4,display:"flex",gap:8,alignItems:"flex-start"}}>
+          <div style={{flex:1}}><div style={{display:"flex",gap:4,alignItems:"center",marginBottom:2}}><span style={{fontSize:12,fontWeight:700,color:m.user_id==="admin"?T.accent:T.text}}>{m.user_name}</span><span style={{fontSize:10,color:T.dim}}>{fD(m.created_at)}</span>{m.unit_ref&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(201,168,76,0.1)",color:T.accent}}>{m.unit_ref}</span>}</div><div style={{fontSize:12,color:T.text,whiteSpace:"pre-wrap"}}>{m.message}</div></div>
+          <div style={{display:"flex",gap:2,flexShrink:0}}><button onClick={()=>db.pinChat(m.id,false)} style={{...gB,padding:"2px 5px",fontSize:9}}>{LL.unpin}</button><button onClick={()=>db.deleteChat(m.id)} style={{...dB,padding:"2px 5px",fontSize:9}}>{Ic.del}</button></div>
+        </div>)}</div>}
+        <div style={{display:"grid",gap:4}}>{unpinned.map(m=><div key={m.id} style={{padding:"8px 10px",background:m.user_id==="admin"?"rgba(201,168,76,0.05)":T.card,borderRadius:6,border:`1px solid ${T.border}`,display:"flex",gap:8,alignItems:"flex-start"}}>
+          <div style={{flex:1}}><div style={{display:"flex",gap:4,alignItems:"center",marginBottom:2}}><span style={{fontSize:12,fontWeight:700,color:m.user_id==="admin"?T.accent:T.text}}>{m.user_name}</span><span style={{fontSize:10,color:T.dim}}>{fD(m.created_at)}</span>{m.unit_ref&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(201,168,76,0.1)",color:T.accent}}>{m.unit_ref}</span>}</div><div style={{fontSize:12,color:T.text,whiteSpace:"pre-wrap"}}>{m.message}</div></div>
+          <div style={{display:"flex",gap:2,flexShrink:0}}><button onClick={()=>db.pinChat(m.id,true)} style={{...gB,padding:"2px 5px",fontSize:9}}>📌</button><button onClick={()=>db.deleteChat(m.id)} style={{...dB,padding:"2px 5px",fontSize:9}}>{Ic.del}</button></div>
+        </div>)}</div>
+        {msgs.length===0&&<div style={{textAlign:"center",padding:30,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`}}>{LL.noMsgsYet}</div>}
+      </div>;})()}
+
+      {tab==="reports"&&(()=>{
+        const getRange=()=>{const now=new Date();const y=now.getFullYear(),m=now.getMonth(),d=now.getDate();if(rptRange==="thisWeek"){const day=now.getDay();const start=new Date(y,m,d-day);return[start.toISOString().split("T")[0],td()];}if(rptRange==="thisMonth")return[`${y}-${String(m+1).padStart(2,"0")}-01`,td()];if(rptRange==="lastMonth"){const lm=new Date(y,m-1,1);const le=new Date(y,m,0);return[lm.toISOString().split("T")[0],le.toISOString().split("T")[0]];}return[rptD1,rptD2];};
+        const genReport=()=>{const[from,to]=getRange();const rj=jobs.filter(j=>inRange(j.dateIn,from,to)||( j.dateDone&&inRange(j.dateDone,from,to)));const completed=rj.filter(j=>j.status==="completed");const qcTotal=rj.filter(j=>j.status==="completed"||j.status==="redo-flagged");const passRate=qcTotal.length>0?Math.round(completed.length/qcTotal.length*100):0;
+          const turnarounds=completed.filter(j=>j.dateDone&&j.dateIn).map(j=>(new Date(j.dateDone)-new Date(j.dateIn))/86400000);const avgTurn=turnarounds.length?Math.round(turnarounds.reduce((a,b)=>a+b,0)/turnarounds.length*10)/10:0;
+          const outsourced=rj.filter(j=>j.status==="outsourced"||j.outsourceTo);const outPct=rj.length?Math.round(outsourced.length/rj.length*100):0;
+          const techStats={};rj.forEach(j=>{const tn=techs.find(t=>t.id===j.techId);const nm=tn?tn.name:j.techId;if(!techStats[nm])techStats[nm]={total:0,pass:0};techStats[nm].total++;if(j.status==="completed")techStats[nm].pass++;});
+          const topPerf=Object.entries(techStats).sort((a,b)=>b[1].total-a[1].total)[0];const topPR=Object.entries(techStats).sort((a,b)=>{const ra=a[1].total?a[1].pass/a[1].total:0;const rb=b[1].total?b[1].pass/b[1].total:0;return rb-ra;})[0];
+          const partsCost=(partsInv||[]).reduce((s,p)=>(s+(p.cost||0)*(p.qty||0)),0);
+          const rates=commRates||[];const rateMap={};rates.forEach(r=>{rateMap[r.section+":"+r.step]=Number(r.rate)||0;});const commTotal=completed.reduce((s,j)=>{const sjs=(j.subJobs||[]).map(x=>typeof x==="object"?x.name:x);let t=0;sjs.forEach(x=>{t+=rateMap["Repair:"+x]||0;});return s+t;},0);
+          const osTotal=outsourced.length;
+          // Previous period for "most improved"
+          const daysDiff=Math.max(1,Math.ceil((new Date(to)-new Date(from))/86400000));const prevTo=new Date(new Date(from).getTime()-86400000).toISOString().split("T")[0];const prevFrom=new Date(new Date(from).getTime()-daysDiff*86400000).toISOString().split("T")[0];const prevJobs=jobs.filter(j=>inRange(j.dateIn,prevFrom,prevTo));const prevTech={};prevJobs.forEach(j=>{const tn=techs.find(t=>t.id===j.techId);const nm=tn?tn.name:j.techId;prevTech[nm]=(prevTech[nm]||0)+1;});
+          let mostImproved="-";let bestDiff=-Infinity;Object.entries(techStats).forEach(([nm,v])=>{const prev=prevTech[nm]||0;const diff=v.total-prev;if(diff>bestDiff){bestDiff=diff;mostImproved=nm+` (+${diff})`;}});
+          setRptData({from,to,total:rj.length,passRate,avgTurn,outsourced:outsourced.length,outPct,topPerf:topPerf?`${topPerf[0]} (${topPerf[1].total} units)`:"-",topPR:topPR?`${topPR[0]} (${topPR[1].total>0?Math.round(topPR[1].pass/topPR[1].total*100):0}%)`:"-",mostImproved,partsCost,commTotal,osTotal,jobs:rj});};
+        return <div>
+          <h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{LL.reports}</h3>
+          <div style={{background:T.card,borderRadius:10,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
+            <div style={{display:"flex",gap:5,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
+              <span style={{color:T.muted,fontSize:12,fontWeight:600}}>{LL.period}:</span>
+              {[["thisWeek",LL.thisWeek],["thisMonth",LL.thisMonth],["lastMonth",LL.lastMonth],["custom",LL.custom]].map(([k,l])=><button key={k} onClick={()=>setRptRange(k)} style={{...gB,padding:"5px 10px",fontSize:11,background:rptRange===k?"rgba(201,168,76,0.12)":"transparent",color:rptRange===k?T.accent:T.dim,borderColor:rptRange===k?"rgba(201,168,76,0.3)":T.border}}>{l}</button>)}
+            </div>
+            {rptRange==="custom"&&<div style={{display:"flex",gap:5,marginBottom:10,alignItems:"center"}}><input type="date" value={rptD1} onChange={e=>setRptD1(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px",colorScheme:"dark"}}/><span style={{color:T.dim}}>{LL.toLabel}</span><input type="date" value={rptD2} onChange={e=>setRptD2(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px",colorScheme:"dark"}}/></div>}
+            <button onClick={genReport} style={{...pB,padding:"10px 20px",fontSize:13}}>{LL.generateReport}</button>
+          </div>
+          {rptData&&<div style={{background:T.card,borderRadius:10,padding:16,border:`1px solid ${T.border}`}}>
+            <div style={{color:T.dim,fontSize:11,marginBottom:12,textAlign:"center"}}>{rptData.from} to {rptData.to}</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginBottom:16}}>
+              {[{l:LL.totalProcessed,v:rptData.total,c:T.accent},{l:LL.qcPassRate,v:rptData.passRate+"%",c:T.success},{l:LL.avgTurnaround,v:rptData.avgTurn+" "+LL.days,c:T.warning},{l:LL.unitsOutsourced,v:`${rptData.outsourced} (${rptData.outPct}%)`,c:T.amber},{l:LL.partsCost,v:"$"+rptData.partsCost.toFixed(2),c:T.purple},{l:LL.commTotal,v:"RM "+rptData.commTotal.toFixed(2),c:T.success}].map(s=><div key={s.l} style={{padding:12,borderRadius:8,background:T.inputBg,border:`1px solid ${T.border}`,textAlign:"center"}}><div style={{fontSize:20,fontWeight:800,color:s.c}}>{s.v}</div><div style={{fontSize:10,color:T.dim,fontWeight:600,textTransform:"uppercase",marginTop:2}}>{s.l}</div></div>)}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:16}}>
+              <div style={{padding:10,borderRadius:8,background:T.inputBg,border:`1px solid ${T.border}`}}><div style={{fontSize:10,color:T.dim,fontWeight:600,textTransform:"uppercase",marginBottom:2}}>{LL.topPerformer}</div><div style={{fontSize:12,color:T.text,fontWeight:700}}>{rptData.topPerf}</div></div>
+              <div style={{padding:10,borderRadius:8,background:T.inputBg,border:`1px solid ${T.border}`}}><div style={{fontSize:10,color:T.dim,fontWeight:600,textTransform:"uppercase",marginBottom:2}}>{LL.highestPassRate}</div><div style={{fontSize:12,color:T.text,fontWeight:700}}>{rptData.topPR}</div></div>
+              <div style={{padding:10,borderRadius:8,background:T.inputBg,border:`1px solid ${T.border}`}}><div style={{fontSize:10,color:T.dim,fontWeight:600,textTransform:"uppercase",marginBottom:2}}>{LL.mostImproved}</div><div style={{fontSize:12,color:T.text,fontWeight:700}}>{rptData.mostImproved}</div></div>
+            </div>
+            <button onClick={()=>exXL(rptData.jobs,techs,rptData.from,rptData.to,null,inv)} style={{...pB,width:"100%",justifyContent:"center",padding:"10px",fontSize:13}}>{Ic.dl} {LL.exportExcel}</button>
+          </div>}
+        </div>;
+      })()}
+
+      {/* ── Buyers Tab ── */}
+      {tab==="buyers"&&<><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:0}}>{LL.buyersTitle}</h3><button onClick={()=>{setBuyerForm({name:"",contact:"",address:"",terms:"",notes:""});setEditBuyerData(null);setShowBuyerMod(true);}} style={{...pB,fontSize:11,padding:"5px 9px"}}>{Ic.plus} {LL.addBuyer}</button></div>
+        {(!buyers||!buyers.length)?<div style={{textAlign:"center",padding:30,color:T.dim}}>{LL.noBuyers}</div>:
+        <div style={{display:"grid",gap:4}}>{buyers.map(b=><div key={b.id} style={{background:T.card,borderRadius:8,padding:"10px 14px",border:`1px solid ${T.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div><div style={{color:T.text,fontWeight:700,fontSize:13}}>{b.name}</div>{b.contact&&<div style={{color:T.muted,fontSize:11}}>{b.contact}</div>}{b.address&&<div style={{color:T.dim,fontSize:10}}>{b.address}</div>}{b.terms&&<div style={{color:T.accent,fontSize:10}}>Terms: {b.terms}</div>}</div>
+          <div style={{display:"flex",gap:3}}><button onClick={()=>{setBuyerForm({name:b.name,contact:b.contact||"",address:b.address||"",terms:b.terms||"",notes:b.notes||""});setEditBuyerData(b);setShowBuyerMod(true);}} style={{...gB,padding:"3px 6px"}}>{Ic.edt}</button><button onClick={()=>{if(confirm(LL.deleteConfirm))db.removeBuyer(b.id);}} style={{...dB,padding:"3px 6px"}}>{Ic.del}</button></div>
+        </div>)}</div>}
+        {showBuyerMod&&<Mod title={editBuyerData?LL.editBuyer:LL.addBuyer} onClose={()=>setShowBuyerMod(false)}>
+          <Fld label={LL.buyerName}><input style={bI} value={buyerForm.name} onChange={e=>setBuyerForm({...buyerForm,name:e.target.value})} autoFocus/></Fld>
+          <Fld label={LL.contact}><input style={bI} value={buyerForm.contact} onChange={e=>setBuyerForm({...buyerForm,contact:e.target.value})}/></Fld>
+          <Fld label={LL.address}><input style={bI} value={buyerForm.address} onChange={e=>setBuyerForm({...buyerForm,address:e.target.value})}/></Fld>
+          <Fld label={LL.terms}><input style={bI} value={buyerForm.terms} onChange={e=>setBuyerForm({...buyerForm,terms:e.target.value})}/></Fld>
+          <Fld label={LL.notes}><textarea style={{...bI,minHeight:50}} value={buyerForm.notes} onChange={e=>setBuyerForm({...buyerForm,notes:e.target.value})}/></Fld>
+          <button onClick={async()=>{if(!buyerForm.name.trim())return;if(editBuyerData){await db.updateBuyer(editBuyerData.id,buyerForm);}else{await db.addBuyer(buyerForm);}setShowBuyerMod(false);}} style={{...pB,width:"100%",justifyContent:"center"}}>{LL.save}</button>
+        </Mod>}
+      </>}
+
+      {/* ── Buyer Orders Tab ── */}
+      {tab==="buyerorders"&&(()=>{
+        const genOrderNo=()=>{const yr=new Date().getFullYear();const existing=(buyerOrders||[]).filter(o=>o.order_no&&o.order_no.startsWith("PI-"+yr));const num=existing.length+1;return `PI-${yr}-${String(num).padStart(3,"0")}`;};
+        const getOrderScope=(o)=>{const m=(o?.notes||"").match(/^SCOPE:([^|]*)\|/);return m?m[1].split(","):["glass","camera","housing"];};
+        const isUnitDoneForOrder=(it,scope)=>{const gOk=!scope.includes("glass")||it.glassStatus==="serviced";const cOk=!scope.includes("camera")||it.cameraStatus==="serviced";const hOk=!scope.includes("housing")||it.housingStatus==="serviced";return gOk&&cOk&&hOk;};
+        const getPriColor=(p)=>p==="urgent"?"#EF4444":p==="rush"?"#F59E0B":"#64748B";
+        const getStColor=(s)=>s==="delivered"?T.success:s==="ready"?T.accent:s==="in-progress"?T.warning:T.dim;
+        const getOrderProgress=(orderId)=>{const items=(orderItems||[]).filter(i=>i.order_id===orderId);if(!items.length)return{done:0,total:0,pct:0};let done=0;items.forEach(it=>{const unit=inv.find(u=>u._dbId===it.inventory_id);if(unit&&unit.glassStatus==="serviced"&&unit.cameraStatus==="serviced"&&unit.housingStatus==="serviced")done++;});return{done,total:items.length,pct:items.length?Math.round(done/items.length*100):0};};
+        const getOrderTotal=(orderId)=>(orderItems||[]).filter(i=>i.order_id===orderId).reduce((s,i)=>s+(Number(i.price_per_unit)||0),0);
+        return <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:0}}>{LL.ordersTitle}</h3><button onClick={()=>{setOrderForm({buyer_id:"",order_date:td(),delivery_date:"",priority:"normal",notes:""});setShowOrderMod(true);}} style={{...pB,fontSize:11,padding:"5px 9px"}}>{Ic.plus} {LL.createOrder}</button></div>
+          {(!buyerOrders||!buyerOrders.length)?<div style={{textAlign:"center",padding:30,color:T.dim}}>{LL.noOrders}</div>:
+          <div style={{display:"grid",gap:6}}>{buyerOrders.map(o=>{const byr=(buyers||[]).find(b=>b.id===o.buyer_id);const prog=getOrderProgress(o.id);const total=getOrderTotal(o.id);const oItems=(orderItems||[]).filter(i=>i.order_id===o.id);const isExp=expandedOrder===o.id;
+            return <div key={o.id} style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+              <div onClick={()=>setExpandedOrder(isExp?null:o.id)} style={{padding:"10px 14px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:6}}>
+                <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                  <span style={{color:T.accent,fontWeight:700,fontSize:13,fontFamily:"monospace"}}>{o.order_no||"—"}</span>
+                  <span style={{color:T.text,fontWeight:600,fontSize:12}}>{byr?.name||"—"}</span>
+                  <span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:700,background:`${getStColor(o.status)}18`,color:getStColor(o.status)}}>{o.status||"pending"}</span>
+                  <span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:700,background:`${getPriColor(o.priority)}18`,color:getPriColor(o.priority)}}>{(o.priority||"normal").toUpperCase()}</span>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  {o.delivery_date&&<span style={{color:T.dim,fontSize:10}}>{LL.deadline}: {o.delivery_date}</span>}
+                  <span style={{color:T.muted,fontSize:11,fontWeight:600}}>{prog.done}/{prog.total}</span>
+                  <span style={{color:T.accent,fontSize:11,fontWeight:700}}>RM {total.toFixed(2)}</span>
+                  <span style={{color:T.dim,fontSize:12}}>{isExp?"▲":"▼"}</span>
+                </div>
+              </div>
+              {/* Progress bar */}
+              <div style={{height:3,background:T.border}}><div style={{height:3,background:T.accent,width:`${prog.pct}%`,transition:"width 0.3s"}}/></div>
+              {isExp&&<div style={{padding:"10px 14px",borderTop:`1px solid ${T.border}`}}>
+                {o.notes&&<div style={{color:T.muted,fontSize:11,marginBottom:8,padding:"4px 8px",background:T.inputBg,borderRadius:4}}>{o.notes}</div>}
+                <div style={{display:"flex",gap:4,marginBottom:8,flexWrap:"wrap"}}>
+                  <button onClick={()=>{setShowLinkMod(o.id);setLinkBatch("all");setLinkChecked({});setLinkPrice("");setLinkBulkQ("");}} style={{...pB,padding:"4px 10px",fontSize:11}}>{Ic.plus} {LL.linkUnits}</button>
+                  {oItems.length>0&&<button onClick={()=>{setBulkMoveFrom(o.id);setBulkMoveQ("");}} style={{...gB,padding:"4px 10px",fontSize:11,color:T.warning,borderColor:T.warning}}>📦 {lang==="cn"?"批量转移":"Bulk Move"}</button>}
+                  {o.status!=="delivered"&&<><select value={o.status} onChange={e=>db.updateOrder(o.id,{status:e.target.value})} style={{...bI,width:"auto",fontSize:11,padding:"4px 7px"}}><option value="pending">{LL.pending}</option><option value="in-progress">{LL.inProgress}</option><option value="ready">{LL.orderReady}</option><option value="delivered">{LL.delivered}</option></select>
+                  <select value={o.priority} onChange={e=>db.updateOrder(o.id,{priority:e.target.value})} style={{...bI,width:"auto",fontSize:11,padding:"4px 7px"}}><option value="normal">{LL.normal}</option><option value="rush">{LL.rush}</option><option value="urgent">{LL.urgent}</option></select></>}
+                  <button onClick={()=>{if(confirm(LL.deleteConfirm))db.deleteOrder(o.id);}} style={{...dB,padding:"4px 8px",fontSize:10}}>{Ic.del}</button>
+                </div>
+                {(()=>{const selCount=oItems.filter(oi=>oiChecked[oi.id]).length;const allSel=oItems.length>0&&selCount===oItems.length;return oItems.length>0?<div>
+                  {selCount>0&&<div style={{display:"flex",gap:4,marginBottom:6,alignItems:"center",flexWrap:"wrap"}}>
+                    <span style={{fontSize:11,color:T.text,fontWeight:600}}>{selCount} selected</span>
+                    <button onClick={async()=>{if(!confirm(`Delete ${selCount} items?`))return;for(const oi of oItems.filter(x=>oiChecked[x.id])){await db.removeOrderItem(oi.id);}setOiChecked({});}} style={{...dB,padding:"4px 10px",fontSize:10}}>🗑 Delete ({selCount})</button>
+                    <select onChange={async e=>{const targetId=parseInt(e.target.value);if(!targetId)return;e.target.value="";if(!confirm(`Move ${selCount} units to another order?`))return;for(const oi of oItems.filter(x=>oiChecked[x.id])){await db.removeOrderItem(oi.id);await db.addOrderItem({order_id:targetId,inventory_id:oi.inventory_id,price_per_unit:oi.price_per_unit,delivered:false});}setOiChecked({});}} style={{...bI,width:"auto",fontSize:11,padding:"4px 7px"}} defaultValue=""><option value="">📦 Move to...</option>{buyerOrders.filter(x=>x.id!==o.id).map(x=>{const b=(buyers||[]).find(bb=>bb.id===x.buyer_id);return <option key={x.id} value={x.id}>{x.order_no} — {b?.name||"?"}</option>;})}</select>
+                  </div>}
+                  <div style={{background:T.inputBg,borderRadius:6,overflow:"auto"}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:600}}><thead><tr style={{borderBottom:`1px solid ${T.border}`}}><th style={{padding:"5px 4px"}}><input type="checkbox" checked={allSel} onChange={()=>{if(allSel)setOiChecked({});else{const m={};oItems.forEach(oi=>m[oi.id]=true);setOiChecked(m);}}} style={{width:14,height:14}}/></th>{["#","Code","Model","IMEI","R","G","C","H","QC Remark","Price","Del"].map(h=><th key={h} style={{padding:"5px 4px",textAlign:"left",color:T.dim,fontSize:9,fontWeight:600}}>{h}</th>)}</tr></thead><tbody>{oItems.map((oi,idx)=>{const unit=inv.find(u=>u._dbId===oi.inventory_id);if(!unit)return <tr key={oi.id}><td colSpan={13} style={{padding:"4px",color:T.dim,fontSize:10}}>Unit #{oi.inventory_id} not found</td></tr>;
+                  const rJ=getUJ(unit.imei,unit.serial,jobs).filter(j=>j.component==="full"||!j.component);const latR=rJ.sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn))[0];
+                  return <tr key={oi.id} style={{borderBottom:`1px solid ${T.border}`,background:oiChecked[oi.id]?"rgba(201,168,76,0.06)":"transparent"}}>
+                    <td style={{padding:"4px"}}><input type="checkbox" checked={!!oiChecked[oi.id]} onChange={()=>setOiChecked(p=>({...p,[oi.id]:!p[oi.id]}))} style={{width:14,height:14}}/></td>
+                    <td style={{padding:"4px",color:T.dim,fontSize:10}}>{idx+1}</td>
+                    <td style={{padding:"4px",color:T.warning,fontSize:10,fontWeight:600}}>{unit.grade||"—"}</td>
+                    <td style={{padding:"4px",color:T.text,fontSize:10}}>{unit.product}</td>
+                    <td style={{padding:"4px",color:T.accent,fontSize:9,fontFamily:"monospace"}}>{unit.imei||unit.serial||"—"}</td>
+                    <td style={{padding:"4px",fontSize:12}}>{latR?latR.status==="completed"?"🟢":latR.status==="in-progress"?"🟡":"🔴":"⬜"}</td>
+                    <td style={{padding:"4px",fontSize:12}}>{unit.glassStatus==="serviced"?"🟢":unit.glassStatus==="na"?"⬜":"🟡"}</td>
+                    <td style={{padding:"4px",fontSize:12}}>{unit.cameraStatus==="serviced"?"🟢":unit.cameraStatus==="na"?"⬜":unit.cameraStatus==="washing"?"🟣":"🟡"}</td>
+                    <td style={{padding:"4px",fontSize:12}}>{unit.housingStatus==="serviced"?"🟢":unit.housingStatus==="na"?"⬜":"🟡"}</td>
+                    <td style={{padding:"4px",fontSize:9,color:T.warning,maxWidth:120}}>{(()=>{const qcLogs=((unit.cameraDetail||{}).stepLog||[]).filter(s=>s.type==="qc_remark");return qcLogs.length>0?qcLogs.map(s=>s.remark).join("; "):<span style={{color:T.dim}}>—</span>;})()}</td>
+                    <td style={{padding:"4px"}}><input type="number" defaultValue={Number(oi.price_per_unit||0).toFixed(2)} onBlur={async e=>{const v=parseFloat(e.target.value)||0;if(v!==Number(oi.price_per_unit||0))await db.updateOrderItem(oi.id,{price_per_unit:v});}} style={{...bI,width:80,fontSize:10,padding:"2px 4px"}}/></td>
+                    <td style={{padding:"4px"}}><button onClick={()=>db.removeOrderItem(oi.id)} style={{...dB,padding:"1px 4px",fontSize:8}}>{Ic.del}</button></td>
+                  </tr>;})}</tbody></table></div></div>:<div style={{color:T.dim,fontSize:11,textAlign:"center",padding:12}}>No units linked</div>;})()}
+              </div>}
+            </div>;})}</div>}
+          {/* Create Order Modal */}
+          {showOrderMod&&<Mod title={LL.createOrder} onClose={()=>setShowOrderMod(false)}>
+            <Fld label={LL.buyer}><select style={bI} value={orderForm.buyer_id} onChange={e=>setOrderForm({...orderForm,buyer_id:e.target.value})}><option value="">{LL.selectBuyer}</option>{(buyers||[]).map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></Fld>
+            <Fld label={LL.orderDate}><input type="date" style={bI} value={orderForm.order_date} onChange={e=>setOrderForm({...orderForm,order_date:e.target.value})}/></Fld>
+            <Fld label={LL.deliveryDate}><input type="date" style={bI} value={orderForm.delivery_date} onChange={e=>setOrderForm({...orderForm,delivery_date:e.target.value})}/></Fld>
+            <Fld label={LL.priority}><div style={{display:"flex",gap:4}}>{[["normal",LL.normal,"#64748B"],["rush",LL.rush,"#F59E0B"],["urgent",LL.urgent,"#EF4444"]].map(([k,l,c])=><button key={k} onClick={()=>setOrderForm({...orderForm,priority:k})} style={{...gB,padding:"6px 14px",fontSize:12,background:orderForm.priority===k?`${c}18`:"transparent",color:orderForm.priority===k?c:T.dim,borderColor:orderForm.priority===k?c:T.border,fontWeight:orderForm.priority===k?700:400}}>{l}</button>)}</div></Fld>
+            <Fld label={lang==="cn"?"服务范围":"Services Required"}><div style={{display:"flex",gap:8}}>{[["scopeGlass","🔲 Glass"],["scopeCamera","📷 Camera"],["scopeHousing","🏠 Housing"]].map(([k,l])=><label key={k} style={{display:"flex",alignItems:"center",gap:4,cursor:"pointer",padding:"6px 10px",borderRadius:5,background:orderForm[k]?"rgba(201,168,76,0.12)":"transparent",border:`1px solid ${orderForm[k]?T.accent:T.border}`}}><input type="checkbox" checked={orderForm[k]} onChange={()=>setOrderForm(p=>({...p,[k]:!p[k]}))} style={{width:16,height:16,accentColor:T.accent}}/><span style={{fontSize:12,color:orderForm[k]?T.accent:T.dim}}>{l}</span></label>)}</div></Fld>
+            <Fld label={LL.notes}><textarea style={{...bI,minHeight:50}} value={orderForm.notes} onChange={e=>setOrderForm({...orderForm,notes:e.target.value})} placeholder={LL.orderNotes}/></Fld>
+            <button onClick={async()=>{if(!orderForm.buyer_id)return;const orderNo=genOrderNo();const scope=[];if(orderForm.scopeGlass)scope.push("glass");if(orderForm.scopeCamera)scope.push("camera");if(orderForm.scopeHousing)scope.push("housing");const scopeStr="SCOPE:"+scope.join(",")+"|";await db.addOrder({order_no:orderNo,buyer_id:orderForm.buyer_id,status:"pending",priority:orderForm.priority,order_date:orderForm.order_date,delivery_date:orderForm.delivery_date||null,notes:scopeStr+orderForm.notes,total_amount:0});setShowOrderMod(false);}} disabled={!orderForm.buyer_id} style={{...pB,width:"100%",justifyContent:"center",opacity:orderForm.buyer_id?1:0.4}}>{LL.createOrder}</button>
+          </Mod>}
+          {/* Link Units Modal */}
+          {showLinkMod&&<Mod title={LL.linkUnits} onClose={()=>setShowLinkMod(null)} w="700px">
+            <Fld label={LL.pricePerUnit}><input type="number" style={{...bI,width:160}} value={linkPrice} onChange={e=>setLinkPrice(e.target.value)} placeholder="0.00"/></Fld>
+            <Fld label={lang==="cn"?"粘贴 IMEI（每行一个）":"Paste IMEI (one per line)"}><textarea style={{...bI,minHeight:100,resize:"vertical",fontFamily:"'JetBrains Mono',monospace",fontSize:13}} placeholder={"AC-1\nAC-5\n354509719058721\nNRWMR4NW43"} value={linkBulkQ||""} onChange={e=>setLinkBulkQ(e.target.value)}/></Fld>
+            {(()=>{if(!linkBulkQ||!linkBulkQ.trim())return <div style={{color:T.dim,fontSize:11,textAlign:"center",padding:16}}>{lang==="cn"?"输入后显示结果":"Results will show after input"}</div>;
+              const terms=linkBulkQ.split("\n").map(s=>s.trim()).filter(Boolean);const alreadyLinked=new Set((orderItems||[]).filter(oi=>oi.order_id===showLinkMod).map(oi=>oi.inventory_id));
+              const stIcon=(st)=>st==="serviced"?"✅":st==="washing"?"🟣":st==="service"?"🟡":st==="partial"?"☑️":st==="completed"?"✅":st==="qc-pending"?"🟠":st==="redo-flagged"?"🔴":st==="in-progress"?"⏳":st==="outsourced"?"📦":"⬜";
+              const found=[];const notFound=[];
+              terms.forEach(q=>{const ql=q.toLowerCase().toUpperCase();const it=inv.find(i=>(i.codeId&&i.codeId.toUpperCase()===ql)||(i.imei&&i.imei===q.replace(/\D/g,""))||(i.serial&&i.serial.toUpperCase()===ql));if(it&&!alreadyLinked.has(it._dbId)&&!found.some(f=>f._dbId===it._dbId))found.push(it);else if(!it)notFound.push(q);});
+              const byBatch={};found.forEach(it=>{const b=it.batchId||"No Batch";if(!byBatch[b])byBatch[b]=[];byBatch[b].push(it);});
+              return <div>
+                <div style={{display:"flex",gap:8,marginBottom:8,fontSize:11}}><span style={{color:T.success,fontWeight:600}}>{found.length} {lang==="cn"?"找到":"found"}</span>{notFound.length>0&&<span style={{color:T.danger}}>{notFound.length} {lang==="cn"?"未找到":"not found"}</span>}</div>
+                {notFound.length>0&&<div style={{fontSize:10,color:T.danger,marginBottom:8,fontFamily:"monospace"}}>{notFound.join(", ")}</div>}
+                {Object.entries(byBatch).map(([batch,items])=><div key={batch} style={{marginBottom:10}}>
+                  <div style={{fontSize:10,color:T.accent,fontWeight:700,marginBottom:4}}>{batch} ({items.length})</div>
+                  <div style={{background:T.card,borderRadius:6,border:`1px solid ${T.border}`,overflow:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr style={{borderBottom:`1px solid ${T.border}`}}>{["Code","Model","R","G","C","H","Issues"].map(h=><th key={h} style={{padding:"5px 4px",textAlign:["R","G","C","H"].includes(h)?"center":"left",color:T.dim,fontSize:9,fontWeight:600}}>{h}</th>)}</tr></thead><tbody>{items.map(it=>{const uj=getUJ(it.imei,it.serial,jobs);const latRep=uj.filter(j=>j.component==="full"||!j.component).sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn))[0];const rSt=latRep?latRep.status:"na";const issues=[];if(it.lcdFault)issues.push("LCD:"+it.lcdFault);if((it.lcdFaults||[]).length)issues.push(...it.lcdFaults);if(it.glassShadow&&it.glassShadow!=="SS")issues.push("Shadow:"+it.glassShadow);if(it.hsUnfixable)issues.push("⚠"+it.hsUnfixable);if(uj.some(j=>j.jobType==="Redo"))issues.push("REDO");return <tr key={it._dbId} style={{borderBottom:`1px solid ${T.border}`}}>
+                    <td style={{padding:"4px",color:T.warning,fontWeight:700,fontSize:11}}>{it.grade||"—"}</td>
+                    <td style={{padding:"4px",color:T.text,fontSize:10}}>{it.product}{it.color?" "+it.color:""}</td>
+                    <td style={{padding:"4px",textAlign:"center",fontSize:12}} title={rSt}>{stIcon(rSt)}</td>
+                    <td style={{padding:"4px",textAlign:"center",fontSize:12}} title={it.glassStatus}>{stIcon(it.glassStatus)}</td>
+                    <td style={{padding:"4px",textAlign:"center",fontSize:12}} title={it.cameraStatus}>{stIcon(it.cameraStatus)}</td>
+                    <td style={{padding:"4px",textAlign:"center",fontSize:12}} title={it.housingStatus}>{stIcon(it.housingStatus)}</td>
+                    <td style={{padding:"4px",fontSize:9,color:issues.length?T.danger:T.success}}>{issues.length?issues.join(", "):"✅ OK"}</td>
+                  </tr>;})}</tbody></table></div>
+                </div>)}
+              </div>;
+            })()}
+            <button onClick={async()=>{if(!linkBulkQ||!linkBulkQ.trim())return;const terms=linkBulkQ.split("\n").map(s=>s.trim()).filter(Boolean);const alreadyLinked=new Set((orderItems||[]).filter(oi=>oi.order_id===showLinkMod).map(oi=>oi.inventory_id));const found=[];terms.forEach(q=>{const ql=q.toUpperCase();const it=inv.find(i=>(i.codeId&&i.codeId.toUpperCase()===ql)||(i.imei&&i.imei===q.replace(/\D/g,""))||(i.serial&&i.serial.toUpperCase()===ql));if(it&&!alreadyLinked.has(it._dbId)&&!found.some(f=>f._dbId===it._dbId))found.push(it);});if(!found.length)return;const items=found.map(it=>({order_id:showLinkMod,inventory_id:it._dbId,price_per_unit:Number(linkPrice)||0,delivered:false}));await db.bulkAddOrderItems(items);
+              const ord=(buyerOrders||[]).find(o=>o.id===showLinkMod);const scopeMatch=(ord?.notes||"").match(/^SCOPE:([^|]*)\|/);const scope=scopeMatch?scopeMatch[1].split(","):["glass","camera","housing"];const needGlass=scope.includes("glass");const needCamera=scope.includes("camera");const needHousing=scope.includes("housing");
+              for(const it of found){await db.addStockMovement({type:"assigned",reference:ord?.order_no||"Order",inventory_id:it._dbId,batch_id:it.batchId,order_id:showLinkMod});const updates={};if(!needGlass&&it.glassStatus!=="serviced")updates.glassStatus="serviced";if(!needCamera&&it.cameraStatus!=="serviced")updates.cameraStatus="serviced";if(!needHousing&&it.housingStatus!=="serviced")updates.housingStatus="serviced";if(Object.keys(updates).length>0){if(updates.housingStatus)updates.cameraDetail={housingStatus:"serviced",housingSteps:["Skipped"]};await db.updateInvStatus(it._dbId,updates);}}
+              const newTotal=(orderItems||[]).filter(i=>i.order_id===showLinkMod).reduce((s,i)=>s+(Number(i.price_per_unit)||0),0)+items.reduce((s,i)=>s+i.price_per_unit,0);await db.updateOrder(showLinkMod,{total_amount:newTotal,status:"in-progress"});setShowLinkMod(null);setLinkBulkQ("");}} disabled={!linkBulkQ||!linkBulkQ.trim()} style={{...pB,width:"100%",justifyContent:"center",marginTop:10,opacity:linkBulkQ&&linkBulkQ.trim()?1:0.4}}>{LL.addToOrder}</button>
+          </Mod>}
+          {bulkMoveFrom&&(()=>{const fromOrder=(buyerOrders||[]).find(o=>o.id===bulkMoveFrom);const fromBuyer=(buyers||[]).find(b=>b.id===fromOrder?.buyer_id);const fromItems=(orderItems||[]).filter(oi=>oi.order_id===bulkMoveFrom);const terms=bulkMoveQ?bulkMoveQ.split("\n").map(s=>s.trim()).filter(Boolean):[];const matched=[];const notFound=[];terms.forEach(q=>{const ql=q.toUpperCase();const qn=q.replace(/\D/g,"");const oi=fromItems.find(fi=>{const u=inv.find(i=>i._dbId===fi.inventory_id);if(!u)return false;return(u.codeId&&u.codeId.toUpperCase()===ql)||(u.imei&&u.imei===qn)||(u.serial&&u.serial.toUpperCase()===ql);});if(oi&&!matched.some(m=>m.id===oi.id))matched.push(oi);else if(!oi)notFound.push(q);});return <Mod title={`📦 ${lang==="cn"?"批量转移":"Bulk Move"} — ${fromOrder?.order_no||""} (${fromBuyer?.name||"?"})`} onClose={()=>setBulkMoveFrom(null)} w="600px">
+            <Fld label={lang==="cn"?"扫描/粘贴 IMEI（每行一个）":"Scan/Paste IMEI (one per line)"}><textarea style={{...bI,minHeight:100,resize:"vertical",fontFamily:"'JetBrains Mono',monospace",fontSize:13}} placeholder={"AO1-1\nAO1-5\n354509719058721"} value={bulkMoveQ} onChange={e=>setBulkMoveQ(e.target.value)} autoFocus/></Fld>
+            {terms.length>0&&<div style={{marginBottom:10}}>
+              <div style={{fontSize:11,color:T.success,fontWeight:600,marginBottom:4}}>✅ {lang==="cn"?"匹配":"Matched"}: {matched.length} | {notFound.length>0&&<span style={{color:T.danger}}>❌ {lang==="cn"?"未找到":"Not found"}: {notFound.length}</span>}</div>
+              {notFound.length>0&&<div style={{fontSize:10,color:T.danger,marginBottom:6,fontFamily:"monospace"}}>{notFound.join(", ")}</div>}
+              {matched.length>0&&<div style={{background:T.inputBg,borderRadius:6,overflow:"auto",maxHeight:200}}><table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr style={{borderBottom:`1px solid ${T.border}`}}>{["#","Code","Model","IMEI","Price"].map(h=><th key={h} style={{padding:"4px 6px",textAlign:"left",color:T.dim,fontSize:9,fontWeight:600}}>{h}</th>)}</tr></thead><tbody>{matched.map((oi,idx)=>{const u=inv.find(i=>i._dbId===oi.inventory_id);return <tr key={oi.id} style={{borderBottom:`1px solid ${T.border}`}}><td style={{padding:"4px 6px",fontSize:10,color:T.dim}}>{idx+1}</td><td style={{padding:"4px 6px",fontSize:11,color:T.warning,fontWeight:600}}>{u?.codeId||"—"}</td><td style={{padding:"4px 6px",fontSize:11,color:T.text}}>{u?.product||"?"}</td><td style={{padding:"4px 6px",fontSize:10,color:T.accent,fontFamily:"monospace"}}>{u?.imei||u?.serial||"—"}</td><td style={{padding:"4px 6px",fontSize:11,color:T.text}}>{oi.price_per_unit||0}</td></tr>;})}</tbody></table></div>}
+            </div>}
+            <Fld label={lang==="cn"?"移动到订单":"Move to Order"}><select id="bulkMoveTarget" style={{...bI,fontSize:12}}><option value="">{lang==="cn"?"选择目标订单":"Select target order..."}</option>{(buyerOrders||[]).filter(x=>x.id!==bulkMoveFrom).map(x=>{const b=(buyers||[]).find(bb=>bb.id===x.buyer_id);return <option key={x.id} value={x.id}>{x.order_no} — {b?.name||"?"}</option>;})}</select></Fld>
+            <button onClick={async()=>{const targetId=parseInt(document.getElementById("bulkMoveTarget").value);if(!targetId){alert(lang==="cn"?"请选择目标订单":"Please select a target order");return;}if(!matched.length){alert(lang==="cn"?"没有匹配的单位":"No matched units");return;}const targetOrder=(buyerOrders||[]).find(o=>o.id===targetId);const targetBuyer=(buyers||[]).find(b=>b.id===targetOrder?.buyer_id);if(!confirm(`${lang==="cn"?"确认移动":"Move"} ${matched.length} ${lang==="cn"?"个单位到":"units to"} ${targetOrder?.order_no} (${targetBuyer?.name||"?"})?`))return;for(const oi of matched){await db.removeOrderItem(oi.id);await db.addOrderItem({order_id:targetId,inventory_id:oi.inventory_id,price_per_unit:oi.price_per_unit,delivered:false});}const fromRemaining=(orderItems||[]).filter(i=>i.order_id===bulkMoveFrom&&!matched.some(m=>m.id===i.id));const fromTotal=fromRemaining.reduce((s,i)=>s+(Number(i.price_per_unit)||0),0);await db.updateOrder(bulkMoveFrom,{total_amount:fromTotal});const targetExisting=(orderItems||[]).filter(i=>i.order_id===targetId);const targetTotal=targetExisting.reduce((s,i)=>s+(Number(i.price_per_unit)||0),0)+matched.reduce((s,m)=>s+(Number(m.price_per_unit)||0),0);await db.updateOrder(targetId,{total_amount:targetTotal,status:"in-progress"});setBulkMoveFrom(null);setBulkMoveQ("");setOiChecked({});}} disabled={!matched.length} style={{...pB,width:"100%",justifyContent:"center",marginTop:10,opacity:matched.length?1:0.4}}>📦 {lang==="cn"?"移动":"Move"} {matched.length} {lang==="cn"?"个单位":"units"}</button>
+          </Mod>;})()}
+        </div>;
+      })()}
+
+      {/* ── Deliveries Tab ── */}
+      {tab==="deliveries"&&(()=>{
+        const deliveryOrders=(buyerOrders||[]).filter(o=>o.status!=="pending");
+        const handleDeliver=async(o)=>{const items=(orderItems||[]).filter(i=>i.order_id===o.id&&!i.delivered);for(const it of items){await db.markItemDelivered(it.id);await db.addStockMovement({type:"out",reference:o.order_no,inventory_id:it.inventory_id,order_id:o.id,notes:"Returned to "+(buyers||[]).find(b=>b.id===o.buyer_id)?.name});}await db.updateOrder(o.id,{status:"delivered"});};
+        return <div>
+          <h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{LL.deliveriesTitle}</h3>
+          {deliveryOrders.length===0?<div style={{textAlign:"center",padding:30,color:T.dim}}>{lang==="cn"?"暂无订单":"No active orders"}</div>:
+          <div style={{display:"grid",gap:5}}>{deliveryOrders.map(o=>{const byr=(buyers||[]).find(b=>b.id===o.buyer_id);const items=(orderItems||[]).filter(i=>i.order_id===o.id);const allDel=items.every(i=>i.delivered);const sm2=(o.notes||"").match(/^SCOPE:([^|]*)\|/);const sc2=sm2?sm2[1].split(","):["glass","camera","housing"];const doneCount=items.filter(oi=>{const it=inv.find(i=>i._dbId===oi.inventory_id);if(!it)return false;return(!sc2.includes("glass")||it.glassStatus==="serviced")&&(!sc2.includes("camera")||it.cameraStatus==="serviced")&&(!sc2.includes("housing")||it.housingStatus==="serviced");}).length;const allReady=items.length>0&&doneCount===items.length;const pct=items.length>0?Math.round(doneCount/items.length*100):0;const stColor=o.status==="delivered"?T.success:allReady?T.success:T.warning;
+            return <div key={o.id} style={{background:T.card,borderRadius:8,padding:"10px 14px",border:`1px solid ${stColor}`,opacity:o.status==="delivered"?0.6:1}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:4}}>
+                <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                  <span style={{color:T.accent,fontWeight:700,fontSize:13,fontFamily:"monospace"}}>{o.order_no}</span>
+                  <span style={{color:T.text,fontWeight:600,fontSize:12}}>{byr?.name||"—"}</span>
+                  <span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:o.status==="delivered"?"rgba(16,185,129,0.15)":allReady?"rgba(16,185,129,0.15)":"rgba(245,158,11,0.15)",color:o.status==="delivered"?T.success:allReady?T.success:T.warning}}>{o.status==="delivered"?LL.delivered:allReady?LL.orderReady:LL.inProgress}</span>
+                  <span style={{fontSize:11,color:T.muted}}>{doneCount}/{items.length}</span>
+                </div>
+                <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                  <span style={{color:T.muted,fontSize:10}}>{items.length} units</span>
+                  {o.delivery_date&&<span style={{fontSize:10,color:T.dim}}>📅 {o.delivery_date}</span>}
+                  {o.status==="delivered"?<div style={{display:"flex",gap:4,alignItems:"center"}}><span style={{padding:"2px 8px",borderRadius:4,fontSize:10,fontWeight:700,background:"rgba(16,185,129,0.15)",color:T.success}}>RETURNED</span><button onClick={async()=>{if(!confirm(lang==="cn"?"撤销退回？":"Reverse return?"))return;for(const it of items){if(it.delivered)await db.updateOrderItem(it.id,{delivered:false,delivered_at:null});}await db.updateOrder(o.id,{status:"in-progress"});}} style={{...gB,padding:"2px 8px",fontSize:10,color:T.warning}}>↩ Reverse</button></div>:
+                  <button onClick={()=>{if(!allReady&&!confirm(lang==="cn"?`只有 ${doneCount}/${items.length} 完成。确定标记已退回？`:`Only ${doneCount}/${items.length} done. Mark as returned anyway?`))return;handleDeliver(o);}} disabled={items.length===0} style={{...pB,padding:"5px 12px",fontSize:11,opacity:allReady?1:0.7}}>{LL.markDelivered}</button>}
+                </div>
+              </div>
+              {o.status==="delivered"&&items[0]?.delivered_at&&<div style={{color:T.dim,fontSize:10,marginTop:4}}>Delivered: {fD(items[0].delivered_at)}</div>}
+            </div>;})}</div>}
+        </div>;
+      })()}
+
+      {/* ── Stock Report Tab ── */}
+      {tab==="stockreport"&&(()=>{
+        const allItems=orderItems||[];const totalOut=allItems.filter(i=>i.delivered).length;const inProcess=allItems.filter(i=>!i.delivered).length;const assignedIds=new Set(allItems.map(i=>i.inventory_id));const availableUnits=inv.filter(i=>!assignedIds.has(i._dbId));
+        // By model
+        const modelMap={};inv.forEach(i=>{const m=i.product||"Unknown";if(!modelMap[m])modelMap[m]={total:0,assigned:0,delivered:0,available:0};modelMap[m].total++;if(assignedIds.has(i._dbId)){const item=allItems.find(x=>x.inventory_id===i._dbId);if(item?.delivered)modelMap[m].delivered++;else modelMap[m].assigned++;}else{modelMap[m].available++;}});
+        // By batch
+        const batchMap={};inv.forEach(i=>{const b=i.batchId||"Unknown";if(!batchMap[b])batchMap[b]={total:0,assigned:0,delivered:0,available:0};batchMap[b].total++;if(assignedIds.has(i._dbId)){const item=allItems.find(x=>x.inventory_id===i._dbId);if(item?.delivered)batchMap[b].delivered++;else batchMap[b].assigned++;}else{batchMap[b].available++;}});
+        const exportStock=async()=>{const X=await import("https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs");const rows=Object.entries(modelMap).map(([m,v])=>({Model:m,Total:v.total,Assigned:v.assigned,Delivered:v.delivered,Available:v.available}));const ws=X.utils.json_to_sheet(rows);const wb=X.utils.book_new();X.utils.book_append_sheet(wb,ws,"StockReport");const bRows=Object.entries(batchMap).map(([b,v])=>({Batch:b,Total:v.total,Assigned:v.assigned,Delivered:v.delivered,Available:v.available}));const ws2=X.utils.json_to_sheet(bRows);X.utils.book_append_sheet(wb,ws2,"ByBatch");X.writeFile(wb,`StockReport_${td()}.xlsx`);};
+        return <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:0}}>{LL.stockReport}</h3><button onClick={exportStock} style={{...pB,fontSize:11,padding:"5px 9px"}}>{Ic.dl} {LL.exportExcelBtn}</button></div>
+          <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
+            {[{l:LL.totalIn,v:inv.length,c:T.accent},{l:LL.totalOut,v:totalOut,c:T.success},{l:LL.inProcess,v:inProcess,c:T.warning},{l:LL.available,v:availableUnits.length,c:T.purple}].map(s=><div key={s.l} style={{flex:1,minWidth:100,padding:12,borderRadius:8,background:T.card,border:`1px solid ${T.border}`,textAlign:"center"}}><div style={{fontSize:22,fontWeight:800,color:s.c}}>{s.v}</div><div style={{fontSize:10,color:T.dim,fontWeight:600,textTransform:"uppercase"}}>{s.l}</div></div>)}
+          </div>
+          <h4 style={{color:T.text,fontSize:13,fontWeight:700,margin:"0 0 6px"}}>{LL.byModelStock}</h4>
+          <div style={{background:T.card,borderRadius:8,border:`1px solid ${T.border}`,overflow:"auto",marginBottom:14}}><table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr style={{borderBottom:`1px solid ${T.border}`}}>{["Model","Total","Assigned","Returned","Available"].map(h=><th key={h} style={{padding:"6px 8px",textAlign:"left",color:T.dim,fontSize:10,fontWeight:600}}>{h}</th>)}</tr></thead><tbody>{Object.entries(modelMap).sort((a,b)=>b[1].total-a[1].total).map(([m,v])=><tr key={m} style={{borderBottom:`1px solid ${T.border}`}}><td style={{padding:"5px 8px",color:T.text,fontSize:11,fontWeight:600}}>{m}</td><td style={{padding:"5px 8px",color:T.accent,fontSize:11}}>{v.total}</td><td style={{padding:"5px 8px",color:T.warning,fontSize:11}}>{v.assigned}</td><td style={{padding:"5px 8px",color:T.success,fontSize:11}}>{v.delivered}</td><td style={{padding:"5px 8px",color:T.purple,fontSize:11}}>{v.available}</td></tr>)}</tbody></table></div>
+          <h4 style={{color:T.text,fontSize:13,fontWeight:700,margin:"0 0 6px"}}>{LL.byBatchStock}</h4>
+          <div style={{background:T.card,borderRadius:8,border:`1px solid ${T.border}`,overflow:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr style={{borderBottom:`1px solid ${T.border}`}}>{["Batch","Total","Assigned","Returned","Available"].map(h=><th key={h} style={{padding:"6px 8px",textAlign:"left",color:T.dim,fontSize:10,fontWeight:600}}>{h}</th>)}</tr></thead><tbody>{Object.entries(batchMap).sort((a,b)=>b[1].total-a[1].total).map(([b,v])=><tr key={b} style={{borderBottom:`1px solid ${T.border}`}}><td style={{padding:"5px 8px",color:T.text,fontSize:11,fontWeight:600}}>{b}</td><td style={{padding:"5px 8px",color:T.accent,fontSize:11}}>{v.total}</td><td style={{padding:"5px 8px",color:T.warning,fontSize:11}}>{v.assigned}</td><td style={{padding:"5px 8px",color:T.success,fontSize:11}}>{v.delivered}</td><td style={{padding:"5px 8px",color:T.purple,fontSize:11}}>{v.available}</td></tr>)}</tbody></table></div>
+        </div>;
+      })()}
+
+      {sR&&<Mod title={LL.report} onClose={()=>setSR(false)} w="600px"><pre style={{background:T.inputBg,padding:10,borderRadius:6,color:T.muted,fontSize:11,fontFamily:"monospace",whiteSpace:"pre-wrap",maxHeight:300,overflow:"auto",border:`1px solid ${T.border}`}}>{(()=>{const rj=jobs.filter(j=>inRange(j.dateIn,fD1,fD2));let r=`KIS REPAIR & WHOLESALES — ${fD1} to ${fD2}\nTotal:${rj.length} Pass:${rj.filter(j=>j.status==="completed").length} Redo:${rj.filter(j=>j.jobType==="Redo").length}\n\n`;techs.forEach(t=>{const tj=rj.filter(j=>j.techId===t.id);if(!tj.length)return;r+=`${t.name}: ${tj.length}\n`;tj.forEach(j=>{r+=` [${j.jobType}][${j.mode||"repair"}] ${j.model} ${sjS(j.subJobs)}${j.qty>1?" x"+j.qty:""}${j.remark?" | "+j.remark:""}${j.extraIssues?" | Issues:"+j.extraIssues:""}${j.waitingParts?" | ⏳PARTS:"+j.partsDetail:""}\n In:${fD(j.dateIn)}${j.dateDone?" Done:"+fD(j.dateDone):""}\n`;});r+="\n";});return r;})()}</pre></Mod>}
+    </div>
+  </div>);
+}
+// ── Search with delete, days, issues, parts ──
+function ISrch({jobs,techs,inv,db,lang}){const LL=LANG[lang];const[q,setQ]=useState("");const[res,setRes]=useState(null);const[bulk,setBulk]=useState(false);const[bulkQ,setBulkQ]=useState("");const[fSt,setFSt]=useState("all");
+  const findByTerm=(v)=>{const vl=v.toLowerCase();const direct=jobs.filter(j=>(j.imei&&j.imei.includes(v))||(j.serial&&j.serial.toLowerCase().includes(vl)));if(direct.length)return direct;const invMatch=inv.find(i=>i.codeId&&i.codeId.toLowerCase()===vl);if(invMatch){return jobs.filter(j=>(invMatch.imei&&j.imei===invMatch.imei)||(invMatch.serial&&j.serial&&j.serial.toUpperCase()===invMatch.serial.toUpperCase()));}return[];};
+  const go=()=>{const v=q.trim();if(!v){setRes(null);return;}setRes(findByTerm(v));};
+  const goBulk=()=>{const terms=bulkQ.split("\n").map(s=>s.trim()).filter(Boolean);if(!terms.length){setRes(null);return;}const all=[];const ids=new Set();terms.forEach(t=>{findByTerm(t).forEach(j=>{if(!ids.has(j.id)){ids.add(j.id);all.push(j);}});});setRes(all);};  const filtered=res?res.filter(j=>fSt==="all"||j.status===fSt):null;
+  return (<div>
+    {!bulk?(<div style={{display:"flex",gap:5,marginBottom:10}}><div style={{position:"relative",flex:1}}><input style={{...bI,paddingLeft:38,fontSize:14,fontFamily:"'JetBrains Mono',monospace"}} placeholder={LL.searchIMEI} value={q} onChange={e=>setQ(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()}/><div style={{position:"absolute",left:8,top:"50%",transform:"translateY(-50%)",color:T.dim}}>{Ic.srch}</div></div><button onClick={go} style={{...pB,padding:"7px 12px"}}>{Ic.srch}</button><button onClick={()=>setBulk(true)} style={{...gB,padding:"4px 8px",fontSize:10}}>{LL.bulkSearch}</button></div>):(
+      <div style={{display:"flex",gap:5,marginBottom:10}}><textarea style={{...bI,minHeight:55,fontSize:12,fontFamily:"monospace",flex:1}} placeholder={LL.bulkHint} value={bulkQ} onChange={e=>setBulkQ(e.target.value)}/><div style={{display:"flex",flexDirection:"column",gap:3}}><button onClick={goBulk} style={{...pB,padding:"6px 10px",fontSize:11}}>{Ic.srch}</button><button onClick={()=>{setBulk(false);setBulkQ("");setRes(null);}} style={{...gB,padding:"4px 8px",fontSize:10}}>✕</button></div></div>
+    )}
+    {filtered!==null&&<div style={{display:"flex",gap:5,marginBottom:8}}><StatusFilter value={fSt} onChange={setFSt} lang={lang}/><span style={{color:T.dim,fontSize:11,alignSelf:"center"}}>{filtered.length} results</span></div>}
+    {filtered===null&&<div style={{textAlign:"center",padding:30,color:T.dim,fontSize:13}}>{LL.searchIMEI}</div>}
+    {filtered!==null&&filtered.length===0&&<div style={{textAlign:"center",padding:30,background:T.card,borderRadius:10,border:`1px solid ${T.border}`}}><div style={{color:T.danger,fontWeight:600,fontSize:13}}>{LL.noResults}</div></div>}
+    {filtered!==null&&filtered.length>0&&<div style={{display:"grid",gap:6}}>{filtered.map(j=>{const tech=techs.find(t=>t.id===j.techId);const invIt=inv.find(i=>(j.imei&&i.imei===j.imei)||(j.serial&&i.serial&&i.serial.toUpperCase()===j.serial.toUpperCase()));const d=daysOpen(j.dateIn);return (<div key={j.id} style={{background:T.card,borderRadius:8,padding:"9px 11px",border:`1px solid ${T.border}`,borderLeft:`3px solid ${j.jobType==="Redo"?T.danger:j.status==="completed"?T.success:T.accent}`}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}><div style={{flex:1}}><div style={{display:"flex",gap:3,marginBottom:2,flexWrap:"wrap"}}><TB t={j.jobType}/><SB s={j.status} lang={lang} qcBy={j.qcBy} jobType={j.jobType}/>{invIt?.codeId&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:9,fontWeight:700,background:"rgba(245,158,11,0.12)",color:T.warning}}>{invIt.codeId}</span>}{j.mode==="service"&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:8,background:"rgba(139,92,246,0.1)",color:T.purple}}>SVC</span>}{!j.dateDone&&d>0&&<span style={{padding:"1px 4px",borderRadius:3,fontSize:9,fontWeight:700,background:d>=3?"rgba(239,68,68,0.15)":"rgba(245,158,11,0.15)",color:d>=3?T.danger:T.warning}}>{d} {LL.daysWith}</span>}</div><div style={{color:T.text,fontWeight:600,fontSize:12}}>{j.model}{j.storage?` · ${j.storage}`:""}{j.qty>1?` ×${j.qty}`:""}</div><div style={{fontSize:11,color:T.text,marginBottom:2}}>{tech?.name||j.techId}</div><div style={{fontSize:11,fontFamily:"monospace",color:T.muted,marginBottom:2}}>{j.imei&&<span style={{color:T.accent}}>I:{j.imei} </span>}{j.serial&&<span style={{color:T.purple}}>S:{j.serial}</span>}</div><SJBadges sjs={j.subJobs} lang={lang}/>{j.remark&&<div style={{fontSize:10,color:T.muted,marginBottom:1}}>{j.remark}</div>}{j.extraIssues&&<div style={{fontSize:10,color:T.warning,marginBottom:1}}>🔧 {j.extraIssues}</div>}{j.waitingParts&&<div style={{fontSize:10,color:T.danger,fontWeight:600,marginBottom:1}}>⏳ {LL.waitingParts}{j.partsDetail?`: ${j.partsDetail}`:""}</div>}{invIt?.batchRemark&&<div style={{fontSize:10,color:T.muted,marginBottom:1}}>📝 {invIt.batchRemark}</div>}{invIt?.conditionRemark&&<div style={{fontSize:10,color:T.amber,marginBottom:1}}>📋 {invIt.conditionRemark}</div>}{j.redoReason&&<div style={{fontSize:11,color:"#fff",fontWeight:600,padding:"3px 6px",background:T.danger,borderRadius:4,marginBottom:2}}>⚠ {j.redoReason}{j.redoRemark?` — ${j.redoRemark}`:""}</div>}{j.outsourceTo&&<div style={{fontSize:11,color:T.amber,fontWeight:600,marginBottom:2}}>📦 → {j.outsourceTo}{j.outsourceReason?` — ${j.outsourceReason}`:""}</div>}<div style={{fontSize:9,color:T.dim}}>In:{fD(j.dateIn)}{j.dateDone?` → ${fD(j.dateDone)}`:""}</div></div><button onClick={()=>{handleDelete(j);}} style={{...dB,padding:"3px 6px",fontSize:9,flexShrink:0}}>{Ic.del}</button></div></div>);})}</div>}
+  </div>);
+}
+
+// ── TECH DASHBOARD — with delete, days tracking, extra issues, waiting parts ──
+function TDash({tech,jobs,subJobs,inv,techs,db,lang,remarkCodes,partsInv,chatMsgs,notifs,buyers,buyerOrders,orderItems}){
+  const LL=LANG[lang];
+  const urgentOrders=(buyerOrders||[]).filter(o=>(o.priority==="rush"||o.priority==="urgent")&&o.status!=="delivered");
+  const getOrdProg=(orderId)=>{const items=(orderItems||[]).filter(i=>i.order_id===orderId);if(!items.length)return{done:0,total:0};let done=0;items.forEach(it=>{const unit=inv.find(u=>u._dbId===it.inventory_id);if(unit&&unit.glassStatus==="serviced"&&unit.cameraStatus==="serviced"&&unit.housingStatus==="serviced")done++;});return{done,total:items.length};};
+  const[tab,setTab]=useState("repair");const[editId,setEditId]=useState(null);const[scanner,setScanner]=useState(false);const[showForm,setShowForm]=useState(false);const[myD1,setMyD1]=useState(td());const[myD2,setMyD2]=useState(td());const[showNotif,setShowNotif]=useState(false);
+  const ef={model:"",storage:"",color:"",grade:"",batch:"",imei:"",serial:"",jobType:"",subJobs:[],customModel:"",remark:"",qty:1,extraIssues:"",waitingParts:false,partsDetail:""};
+  const[form,setForm]=useState(ef);
+  const[lastJob,setLastJob]=useState(null);
+  const my=jobs.filter(j=>j.techId===tech.id);const myT=my.filter(j=>j.dateIn.startsWith(td()));
+  const myQC=my.filter(j=>(j.status==="qc-pending"||j.status==="redo-flagged")&&j.component!=="glass"&&j.component!=="camera");
+  const unseenRedo=my.filter(j=>j.status==="redo-flagged"&&j.redoSeen===false);
+
+  const doAddJob=(mn,isSvc)=>{db.createJob({techId:tech.id,model:mn||"Service",storage:form.storage,color:form.color,grade:form.grade,batch:form.batch,imei:form.imei,serial:form.serial,jobType:form.jobType,subJobs:[...form.subJobs],remark:form.remark||"",qty:form.qty||1,status:isSvc?"completed":"in-progress",dateDone:isSvc?new Date().toISOString():null,mode:isSvc?"service":"repair",extraIssues:form.extraIssues||"",waitingParts:form.waitingParts||false,partsDetail:form.partsDetail||""});};
+  const handleAdd=()=>{const mn=form.model==="Other (Specify)"?form.customModel:form.model;const isSvc=tab==="service";
+    if(!isSvc&&(form.imei||form.serial)){const existRepair=jobs.find(j=>(j.component==="full"||!j.component)&&j.status==="in-progress"&&((form.imei&&j.imei===form.imei)||(form.serial&&j.serial&&j.serial.toUpperCase()===form.serial.toUpperCase())));if(existRepair){const prevTech=techs.find(t=>t.id===existRepair.techId);setDupWarn({type:"Repair",dups:[{codeId:form.serial||form.imei,product:mn,prevTechName:prevTech?prevTech.name:existRepair.techId,prevDate:fD(existRepair.dateIn),count:1}],onConfirm:()=>{doAddJob(mn,isSvc);setShowForm(false);setForm(ef);setDupWarn(null);}});return;}}
+    doAddJob(mn,isSvc);
+    setLastJob({jobType:form.jobType,subJobs:[...form.subJobs],extraIssues:form.extraIssues||"",waitingParts:form.waitingParts||false,partsDetail:form.partsDetail||""});
+    setForm(ef);setShowForm(false);};
+  const handleSave=()=>{db.updateJob(editId,{jobType:form.jobType,subJobs:[...form.subJobs],remark:form.remark||"",extraIssues:form.extraIssues||"",waitingParts:form.waitingParts||false,partsDetail:form.partsDetail||""});setEditId(null);setForm(ef);};
+  const startRepeat=()=>{if(!lastJob)return;setForm({...ef,jobType:lastJob.jobType,subJobs:[...lastJob.subJobs],extraIssues:lastJob.extraIssues,waitingParts:lastJob.waitingParts,partsDetail:lastJob.partsDetail});setShowForm(true);};
+  const[escJob,setEscJob]=useState(null);const[escReason,setEscReason]=useState("");
+  const[cfJob,setCfJob]=useState(null);const[cfReason,setCfReason]=useState("");const[cfTried,setCfTried]=useState("");
+  const unfixableSJ=subJobs.find(s=>s.tab==="system");const unfixableOpts=unfixableSJ?unfixableSJ.options:[];
+  const[hsBatch,setHsBatch]=useState("");const[hsSearch,setHsSearch]=useState("");const[hsBulkMode,setHsBulkMode]=useState(false);const[hsBulkQ,setHsBulkQ]=useState("");
+  const[hsConfirm,setHsConfirm]=useState(null);
+  const[dupWarn,setDupWarn]=useState(null);
+  const[reopenDateMap,setReopenDateMap]=useState({});
+  const findDups=(component,unitIds,excludeRemarks)=>{const dups=[];unitIds.forEach(dbId=>{const it=inv.find(i=>i._dbId===parseInt(dbId));if(!it)return;const existing=jobs.filter(j=>j.component===component&&j.status==="completed"&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase()))&&!(excludeRemarks&&excludeRemarks.some(r=>(j.remark||"").includes(r))));if(existing.length>0){const prevTech=techs.find(t=>t.id===existing[0].techId);dups.push({codeId:it.codeId||it.imei,product:it.product,prevTechName:prevTech?prevTech.name:existing[0].techId,prevDate:fD(existing[0].dateDone||existing[0].dateIn),count:existing.length});}});return dups;};
+  const housingSJ=subJobs.find(s=>s.tab==="housing"&&!s.name.toLowerCase().includes("servicing"));const housingOpts=housingSJ?housingSJ.options:[];
+  const hsSvcSJ=subJobs.find(s=>s.tab==="housing"&&s.name.toLowerCase().includes("servicing"));const hsSvcOpts=hsSvcSJ?hsSvcSJ.options:[];
+  const techQcSJ=subJobs.find(s=>s.tab==="techqc");const techQcOpts=techQcSJ?techQcSJ.options:[];
+  const hsPartsSJ=subJobs.find(s=>s.tab==="hsparts");const hsPartsOpts=hsPartsSJ?hsPartsSJ.options:[];
+  // Dynamic extra sub-jobs per section — any sub-job assigned to a tab shows as a tagging dropdown
+  const usedSJIds=new Set([housingSJ,hsSvcSJ,techQcSJ,hsPartsSJ].filter(Boolean).map(s=>s._dbId));
+  const extraHousingSJs=subJobs.filter(s=>(s.tab==="housing"||s.tab.startsWith("housing")||s.tab==="techqc"||s.tab==="hsparts")&&!usedSJIds.has(s._dbId)&&s.options.length>0);
+  const extraGlassSJs=[];const extraCameraSJs=[];
+  const extraRepairSJs=subJobs.filter(s=>s.tab==="repair"&&s.options.length>0);
+  // Custom tabs that map to sections
+  const customHousingTabs=subJobs.filter(s=>s.tab.startsWith("hs")&&s.tab!=="hsparts"&&!usedSJIds.has(s._dbId)&&!extraHousingSJs.some(x=>x._dbId===s._dbId)&&s.options.length>0);
+  extraHousingSJs.push(...customHousingTabs);
+  // Reusable dynamic tag dropdown renderer
+  const DynTagSection=({it,sj,component,color,icon})=>{
+    const tagKey="dyn_"+sj.name.replace(/\s+/g,"_");
+    const tags=(it.cameraDetail||{})[tagKey]||[];
+    return <div style={{marginLeft:58,marginTop:6}}>
+      <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
+        <select onChange={async e=>{const o=e.target.value;if(!o)return;e.target.value="";const cur=tags;const names=cur.map(x=>typeof x==="object"?x.name:x);if(names.includes(o))return;const next=[...cur,{name:o,techId:tech.id,techName:tech.name}];await db.updateInvStatus(it._dbId,{cameraDetail:{...it.cameraDetail,[tagKey]:next}});const rmk=sj.name+": "+o;const existJ=jobs.find(j=>j.component===component&&j.remark===rmk&&!j.deleted&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())));if(!existJ)await db.createJob({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:[{name:sj.name,option:o}],remark:rmk,qty:1,status:"completed",dateDone:new Date().toISOString(),mode:"service",component});}} onClick={e=>e.stopPropagation()} style={{...bI,width:"auto",fontSize:11,padding:"4px 6px",color}} defaultValue=""><option value="">{icon+" + "+sjN(sj,lang)}</option>{sj.options.filter(o=>!tags.map(x=>typeof x==="object"?x.name:x).includes(o)).map(o=><option key={o} value={o}>{o}</option>)}</select>
+        {tags.map((o,oi)=>{const tag=typeof o==="object"?o:{name:o,techId:null,techName:""};const isOwn=tag.techId===tech.id;return <span key={oi} style={{display:"inline-flex",alignItems:"center",gap:2,padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:color+"20",color}}>{tag.name}{tag.techName&&<span style={{fontSize:8,color:T.dim}}>-{tag.techName}</span>}{isOwn&&<button onClick={async(e)=>{e.stopPropagation();const next=tags.filter((_,i)=>i!==oi);await db.updateInvStatus(it._dbId,{cameraDetail:{...it.cameraDetail,[tagKey]:next}});const rmk=sj.name+": "+tag.name;const existJ=jobs.find(j=>j.component===component&&j.remark===rmk&&!j.deleted&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())));if(existJ)await db.deleteJob(existJ.id);}} style={{background:"rgba(239,68,68,0.15)",border:"none",color:T.danger,cursor:"pointer",fontSize:16,padding:"2px 6px",borderRadius:4,marginLeft:2,lineHeight:1}}>×</button>}{!isOwn&&tag.techId&&<span style={{fontSize:8,color:T.dim,marginLeft:2}}>🔒</span>}</span>;})}
+      </div>
+    </div>;
+  };
+  const[gsBatch,setGsBatch]=useState("");const[gsChecked,setGsChecked]=useState({});const[gsBulkOpt,setGsBulkOpt]=useState([]);const[gsLcd,setGsLcd]=useState({});const[gsSearch,setGsSearch]=useState("");const[gsBulkMode,setGsBulkMode]=useState(false);const[gsBulkQ,setGsBulkQ]=useState("");const[glassView,setGlassView]=useState("glass");const[gsLcdChecked,setGsLcdChecked]=useState({});
+  const[gsFilter,setGsFilter]=useState("all");const[csFilter,setCsFilter]=useState("all");const[hsFilter,setHsFilter]=useState("all");const[svcSort,setSvcSort]=useState("code");
+  const svcFilterBar=(filter,setFilter)=><div style={{display:"flex",gap:3,marginBottom:8,flexWrap:"wrap",alignItems:"center"}}>{[["all",LL.allStatus||"All"],["pending",LL.active||"Pending"],["done",LL.done||"Done"],["mine",LL.myJobs||"My Work"]].map(([k,l])=><button key={k} onClick={()=>setFilter(k)} style={{...gB,padding:"5px 10px",fontSize:11,background:filter===k?"rgba(201,168,76,0.12)":"transparent",color:filter===k?T.accent:T.dim,borderColor:filter===k?"rgba(201,168,76,0.3)":T.border}}>{l}</button>)}<select value={svcSort} onChange={e=>setSvcSort(e.target.value)} style={{...bI,width:"auto",fontSize:11,padding:"4px 6px",marginLeft:"auto"}}><option value="code">Grade</option><option value="status">{LL.statusLabel||"Status"}</option></select></div>;
+  const svcFilterItems=(items,filter,statusField,techField)=>{let f=items;if(filter==="pending")f=items.filter(i=>i[statusField]!=="serviced");else if(filter==="done")f=items.filter(i=>i[statusField]==="serviced");else if(filter==="mine")f=items.filter(i=>{const uj=getUJ(i.imei,i.serial,jobs);return uj.some(j=>j.techId===tech.id&&(j.component===techField||(!j.component&&techField==="full")));});if(svcSort==="code")f=f.sort((a,b)=>(a.grade||"").localeCompare(b.grade||""));else f=f.sort((a,b)=>{const sa=a[statusField]==="serviced"?1:0;const sb=b[statusField]==="serviced"?1:0;return sa-sb;});return f;};
+  const glassSJ=subJobs.find(s=>s.tab==="glass"&&!s.name.toLowerCase().includes("lcd")&&!s.name.toLowerCase().includes("servicing"));const glassOpts=glassSJ?glassSJ.options:[];
+  const lcdSJ=subJobs.find(s=>s.tab==="glass"&&s.name.toLowerCase().includes("lcd"));const lcdOpts=lcdSJ?lcdSJ.options:[];
+  const glassSvcSJ=subJobs.find(s=>s.tab==="glass"&&s.name.toLowerCase().includes("servicing"));const glassSvcOpts=glassSvcSJ?glassSvcSJ.options:[];
+  const camSJ=subJobs.find(s=>s.tab==="camera"&&!s.name.toLowerCase().includes("part"));const camFixOpts=camSJ&&camSJ.options.length?["OK",...camSJ.options]:CAM_FIX;
+  const camPartsSJ=subJobs.find(s=>s.tab==="camera"&&s.name.toLowerCase().includes("part"));const camPartsOpts=camPartsSJ?camPartsSJ.options:[];
+  // Now populate extra SJs after all primary SJs are defined
+  const glassUsedIds=new Set([glassSJ,lcdSJ,glassSvcSJ].filter(Boolean).map(s=>s._dbId));
+  extraGlassSJs.push(...subJobs.filter(s=>(s.tab==="glass"||s.tab.startsWith("glass"))&&s.options.length>0&&!glassUsedIds.has(s._dbId)));
+  const camUsedIds=new Set([camSJ,camPartsSJ].filter(Boolean).map(s=>s._dbId));
+  extraCameraSJs.push(...subJobs.filter(s=>(s.tab==="camera"||s.tab.startsWith("cam"))&&s.options.length>0&&!camUsedIds.has(s._dbId)));
+  const[csBatch,setCsBatch]=useState("");const[csChecked,setCsChecked]=useState({});const[csWashChecked,setCsWashChecked]=useState({});const[csFix,setCsFix]=useState({});const[csSearch,setCsSearch]=useState("");const[csBulkMode,setCsBulkMode]=useState(false);const[csBulkQ,setCsBulkQ]=useState("");
+  const handleCamPartsReport=async(it,note)=>{await db.updateInvStatus(it._dbId,{cameraDetail:{...(it.cameraDetail||{}),partsNote:note}});};
+  const handleGlassSubmit=()=>{const ids=Object.keys(gsChecked).filter(k=>gsChecked[k]);if(!ids.length)return;const dups=findDups("glass",ids);if(dups.length>0){setDupWarn({type:"Glass",dups,onConfirm:()=>{doGlassSubmit(ids);setDupWarn(null);}});return;}doGlassSubmit(ids);};
+  const doGlassSubmit=async(ids)=>{if(!ids.length)return;const now=new Date().toISOString();const jobsData=[];ids.forEach(dbId=>{const it=inv.find(i=>i._dbId===parseInt(dbId));if(gsBulkOpt.length>0){gsBulkOpt.forEach(opt=>{const existGJ=jobs.find(j=>j.component==="glass"&&j.imei===it.imei&&j.remark==="Glass: "+opt&&j.status==="completed");if(!existGJ)jobsData.push({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:glassSJ?[{name:glassSJ.name,option:opt}]:[],remark:"Glass: "+opt,qty:1,status:"completed",dateDone:now,mode:"service",component:"glass"});});}else{const existGJ=jobs.find(j=>j.component==="glass"&&j.imei===it.imei&&j.remark==="Glass: Done"&&j.status==="completed");if(!existGJ)jobsData.push({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:[],remark:"Glass: Done",qty:1,status:"completed",dateDone:now,mode:"service",component:"glass"});}});await db.bulkCreateJobs(jobsData);const logEntries=gsBulkOpt.map(opt=>({type:"glass",step:opt,techId:tech.id,techName:tech.name,at:now}));await db.bulkUpdateInvStatus(ids.map(dbId=>({dbId:parseInt(dbId),glassStatus:"serviced",stepLog:logEntries.length?logEntries:[{type:"glass",step:"Done",techId:tech.id,techName:tech.name,at:now}]})));setGsChecked({});setGsBulkOpt([]);};
+  const handleLcdReport=async(it,note)=>{await db.updateInvStatus(it._dbId,{lcdFault:note});setGsLcd(p=>({...p,[it._dbId]:""}));};
+  const handleLcdMarkServiced=async()=>{const ids=Object.keys(gsLcdChecked).filter(k=>gsLcdChecked[k]);if(!ids.length)return;const now=new Date().toISOString();const jobsData=[];const updArr=[];ids.forEach(dbId=>{const it=inv.find(i=>i._dbId===parseInt(dbId));if(!it)return;const tags=it.lcdFaults||[];if(tags.length===0)return;tags.forEach(issue=>{jobsData.push({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:lcdSJ?[{name:lcdSJ.name,option:issue}]:[],remark:"Glass LCD: "+issue,qty:1,status:"completed",dateDone:now,mode:"service",component:"glass"});});updArr.push({dbId:parseInt(dbId),glassStatus:"serviced",stepLog:[{type:"glass_lcd",techId:tech.id,techName:tech.name,at:now,issues:tags}]});});if(jobsData.length)await db.bulkCreateJobs(jobsData);if(updArr.length)await db.bulkUpdateInvStatus(updArr);setGsLcdChecked({});};
+  const handleCamWash=()=>{const ids=Object.keys(csWashChecked).filter(k=>csWashChecked[k]);if(!ids.length)return;const dups=findDups("camera",ids);if(dups.length>0){setDupWarn({type:"Camera Wash",dups,onConfirm:()=>{doCamWash(ids);setDupWarn(null);}});return;}doCamWash(ids);};
+  const doCamWash=async(ids)=>{if(!ids.length)return;const now=new Date().toISOString();const wJobs=ids.map(dbId=>{const it=inv.find(i=>i._dbId===parseInt(dbId));return{techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:[{name:"Camera",option:"Wash"}],remark:"Camera: Wash",qty:1,status:"completed",dateDone:now,mode:"service",component:"camera"};}).filter(wj=>{const existCW=jobs.find(j=>j.component==="camera"&&j.imei===wj.imei&&j.remark==="Camera: Wash"&&j.status==="completed");return !existCW;});if(!wJobs.length)return;await db.bulkCreateJobs(wJobs);await db.bulkUpdateInvStatus(ids.map(dbId=>({dbId:parseInt(dbId),cameraStatus:"washing",stepLog:[{type:"camera_wash",techId:tech.id,techName:tech.name,at:now}]})));setCsWashChecked({});};
+  const handleCamSubmit=()=>{const ids=Object.keys(csChecked).filter(k=>csChecked[k]);if(!ids.length)return;const dups=findDups("camera",ids,["Wash","camera_skip","camera_ok"]);if(dups.length>0){setDupWarn({type:"Camera Inspect",dups,onConfirm:()=>{doCamSubmit(ids);setDupWarn(null);}});return;}doCamSubmit(ids);};
+  const doCamSubmit=async(ids)=>{if(!ids.length)return;const now=new Date().toISOString();const jobsData=[];const updArr=[];ids.forEach(dbId=>{const it=inv.find(i=>i._dbId===parseInt(dbId));const detail=csFix[dbId]||{};const lenses=CM[it.product]||["Wide 1.0x","Front"];const logs=[];lenses.forEach(lens=>{const lensTags=detail[lens]||[];const tagsArr=Array.isArray(lensTags)?lensTags:[];if(tagsArr.length===0){const rmk="Camera "+lens+": OK";const existCJ=jobs.find(j=>j.component==="camera"&&j.imei===it.imei&&j.remark===rmk&&j.status==="completed");if(!existCJ)jobsData.push({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:[{name:"Camera",option:lens+": OK"}],remark:rmk,qty:1,status:"completed",dateDone:now,mode:"service",component:"camera"});logs.push({type:"camera_inspect",lens,fix:"OK",techId:tech.id,techName:tech.name,at:now});}else{tagsArr.forEach(t=>{const rmk="Camera "+lens+": "+t.fix;const existCJ=jobs.find(j=>j.component==="camera"&&j.imei===it.imei&&j.remark===rmk&&j.status==="completed");if(!existCJ)jobsData.push({techId:t.techId||tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:[{name:"Camera",option:lens+": "+t.fix}],remark:rmk,qty:1,status:"completed",dateDone:now,mode:"service",component:"camera"});logs.push({type:"camera_inspect",lens,fix:t.fix,techId:t.techId||tech.id,techName:t.techName||tech.name,at:now});});}});updArr.push({dbId:parseInt(dbId),cameraStatus:"serviced",cameraDetail:detail,stepLog:logs});});await db.bulkCreateJobs(jobsData);await db.bulkUpdateInvStatus(updArr);setCsChecked({});setCsFix({});};
+  const handlePickUp=async(j)=>{
+    await db.setJobStatus(j.id,"completed",{redoRemark:(j.redoRemark?j.redoRemark+" | ":"")+"Redo picked up by "+tech.name});
+    await db.createJob({techId:tech.id,model:j.model,storage:j.storage,color:j.color,grade:j.grade,batch:j.batch,imei:j.imei,serial:j.serial,jobType:"Redo",subJobs:[],remark:`Redo for ${techs.find(t=>t.id===j.techId)?.name||j.techId}: ${j.redoReason||""}`,qty:1,status:"in-progress",mode:"repair",extraIssues:"",waitingParts:false,partsDetail:""});
+  };
+  const handleEscalate=async()=>{if(!escJob)return;await db.setJobStatus(escJob.id,"redo-flagged",{redoReason:`Escalated by ${tech.name}`,redoRemark:escReason||"Could not resolve",redoSeen:false});setEscJob(null);setEscReason("");};
+  const handleCannotFix=async()=>{if(!cfJob||!cfReason)return;await db.setJobStatus(cfJob.id,"qc-pending",{redoReason:"CANNOT FIX: "+cfReason,redoRemark:cfTried||"",qcBy:tech.name});setCfJob(null);setCfReason("");setCfTried("");};
+  const doHousingStep=async(it,step)=>{const freshInv=await db.getFreshInv(it._dbId);const freshDetail=freshInv?.camera_detail||{};const freshSteps=freshDetail.housingSteps||[];const freshLog=freshDetail.stepLog||[];
+    const localHas=(it.housingSteps||[]).includes(step);const freshHas=freshSteps.includes(step);
+    if(freshHas&&!localHas){const existing=freshLog.filter(l=>l.type==="housing"&&l.step===step).pop();alert(lang==="cn"?`"${step}" 已被 ${existing?.techName||"someone"} 完成（${existing?fD(existing.at):""}）`:`"${step}" already done by ${existing?.techName||"someone"} (${existing?fD(existing.at):""})`);return;}
+    const adding=!freshHas;const next=adding?[...freshSteps,step]:freshSteps.filter(s=>s!==step);const closingStep=housingOpts[housingOpts.length-1];const hasClosing=next.includes(closingStep);const status=next.length===0?"na":hasClosing?"serviced":"partial";const customDt=reopenDateMap[it._dbId];const now=customDt?new Date(customDt).toISOString():new Date().toISOString();const log=adding?[{type:"housing",step,techId:tech.id,techName:tech.name,at:now}]:[{type:"housing_undo",step,techId:tech.id,techName:tech.name,at:now}];await db.updateInvStatus(it._dbId,{housingStatus:status,cameraDetail:{housingSteps:next},stepLog:log});
+    if(adding){const existDup=jobs.find(j=>j.component==="housing"&&j.remark==="Housing: "+step&&!j.deleted&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())));if(existDup)await db.deleteJob(existDup.id);await db.createJob({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:housingSJ?[{name:housingSJ.name,option:step}]:[],remark:"Housing: "+step,qty:1,status:"completed",dateIn:now,dateDone:now,mode:"service",component:"housing"});
+      /* Auto-skip removed: techs now manually send units to QC */}
+    if(!adding){const existingJob=jobs.find(j=>j.component==="housing"&&j.remark==="Housing: "+step&&j.status==="completed"&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())));if(existingJob)await db.deleteJob(existingJob.id);}};
+  const handleHousingStep=(it,step)=>{const existingHJ=jobs.find(j=>j.component==="housing"&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase()))&&j.remark==="Housing: "+step&&j.status==="completed");if(existingHJ){const prevTech=techs.find(t=>t.id===existingHJ.techId);setDupWarn({type:"Housing",dups:[{codeId:it.codeId||it.imei,product:it.product,prevTechName:prevTech?prevTech.name:existingHJ.techId,prevDate:fD(existingHJ.dateDone||existingHJ.dateIn),count:1}],onConfirm:()=>{doHousingStep(it,step);setDupWarn(null);}});return;}doHousingStep(it,step);};
+  const startEdit=j=>{const isO=!Object.keys(PM).includes(j.model);setForm({model:isO?"Other (Specify)":j.model,storage:j.storage||"",color:j.color||"",grade:j.grade||"",batch:j.batch||"",imei:j.imei||"",serial:j.serial||"",jobType:j.jobType,subJobs:j.subJobs?[...j.subJobs]:[],customModel:isO?j.model:"",remark:j.remark||"",qty:j.qty||1,extraIssues:j.extraIssues||"",waitingParts:j.waitingParts||false,partsDetail:j.partsDetail||""});setEditId(j.id);};
+
+  const allRedo=jobs.filter(j=>j.status==="redo-flagged"&&j.component!=="glass"&&j.component!=="camera");
+  const svcRedo=inv.filter(i=>(i.redoHistory||[]).some(r=>(r.type==="glass"&&i.glassStatus!=="serviced")||(r.type==="camera"&&i.cameraStatus!=="serviced")));
+  const svcRedoGlass=inv.filter(i=>(i.redoHistory||[]).some(r=>r.type==="glass")&&i.glassStatus!=="serviced");
+  const svcRedoCam=inv.filter(i=>(i.redoHistory||[]).some(r=>r.type==="camera")&&i.cameraStatus!=="serviced");
+  const glassNeed=inv.filter(i=>i.glassStatus==="service");const glassDone=inv.filter(i=>i.glassStatus==="serviced");
+  const glassAll=inv.filter(i=>i.glassStatus!=="serviced");
+  const camNeed=inv.filter(i=>i.cameraStatus==="service"||i.cameraStatus==="washing");const camDone=inv.filter(i=>i.cameraStatus==="serviced");
+  const camAll=inv.filter(i=>i.cameraStatus!=="serviced");
+  const housingAll=inv.filter(i=>i.housingStatus!=="serviced");const housingPartial=inv.filter(i=>i.housingStatus==="partial");
+  const[tChatMsg,setTChatMsg]=useState("");const[tChatRef,setTChatRef]=useState("");const[tChatReply,setTChatReply]=useState("");
+  const tMainTabs=[{k:"repair",l:LL.repair},{k:"housing",l:`${LL.housingService}(${housingAll.length})`},{k:"glass",l:`${LL.glassService}(${glassAll.length})`,b:glassAll.length},{k:"camera",l:`${LL.cameraService}(${camAll.length})`,b:camAll.length},{k:"redo",l:`${LL.redoQueue}(${allRedo.length}${svcRedo.length>0?"+"+svcRedo.length:""})`,b:allRedo.length+svcRedo.length},{k:"myJobs",l:`${LL.myJobs}(${myT.length})`}];
+  const tMoreItems=[{k:"chat",l:LL.chatLabel}];
+  if(tech.senior)tMoreItems.unshift({k:"overview",l:"Overview"});
+  if(myQC.length>0)tMoreItems.unshift({k:"qcStatus",l:`QC(${myQC.length})`,b:myQC.length});
+  const[tOpenMenu,setTOpenMenu]=useState(false);const[ovExpOrder,setOvExpOrder]=useState(null);
+
+  const JC=({j})=>{const canAct=j.status==="in-progress"||j.status==="partial";const isSvc=j.mode==="service";const d=daysOpen(j.dateIn);return (
+    <div style={{background:T.card,borderRadius:8,padding:"10px 12px",border:`1px solid ${T.border}`,borderLeft:`3px solid ${j.status==="redo-flagged"?T.danger:j.jobType==="Redo"?T.danger:j.status==="completed"?T.success:j.status==="qc-pending"?T.qcO:j.status==="partial"?T.purple:T.warning}`}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:6}}>
+        <div style={{flex:1,minWidth:140}}>
+          <div style={{display:"flex",gap:3,marginBottom:3,flexWrap:"wrap"}}><TB t={j.jobType}/><SB s={j.status} lang={lang} qcBy={j.qcBy} jobType={j.jobType}/>{isSvc&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:8,background:"rgba(139,92,246,0.1)",color:T.purple}}>SVC</span>}{j.component==="glass"&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:8,fontWeight:700,background:"rgba(201,168,76,0.15)",color:T.accent}}>🔲 Glass</span>}{j.component==="camera"&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:8,fontWeight:700,background:"rgba(139,92,246,0.15)",color:T.purple}}>📷 Camera</span>}{j.component==="housing"&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:8,fontWeight:700,background:"rgba(245,158,11,0.15)",color:T.warning}}>🏠 Housing</span>}{j.qty>1&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:8,background:"rgba(201,168,76,0.1)",color:T.accent}}>×{j.qty}</span>}{!j.dateDone&&d>0&&<span style={{padding:"1px 4px",borderRadius:3,fontSize:9,fontWeight:700,background:d>=3?"rgba(239,68,68,0.15)":"rgba(245,158,11,0.15)",color:d>=3?T.danger:T.warning}}>{d} {LL.daysWith}</span>}</div>
+          <div style={{color:T.text,fontWeight:600,fontSize:13,marginBottom:1}}>{(()=>{const it=inv.find(i=>(j.imei&&i.imei===j.imei)||(j.serial&&i.serial&&i.serial.toUpperCase()===j.serial.toUpperCase()));return it?.grade?<span style={{color:T.warning,marginRight:4}}>{it.grade}</span>:null;})()}{j.model}{j.storage?` · ${j.storage}`:""}{j.color?` · ${j.color}`:""}</div>
+          <div className="fxIMEI" style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:2,fontSize:10,fontFamily:"monospace"}}>{j.batch&&<span style={{color:T.dim}}>B:{j.batch}</span>}{j.imei&&<span style={{color:T.accent}}>I:{j.imei}</span>}{j.serial&&<span style={{color:T.purple}}>S:{j.serial}</span>}</div>
+          <SJBadges sjs={j.subJobs} lang={lang} allSJ={subJobs}/>
+          {j.remark&&<div style={{fontSize:10,color:T.muted,padding:"2px 4px",background:T.inputBg,borderRadius:3,marginBottom:2}}>{j.remark}</div>}
+          {j.extraIssues&&<div style={{fontSize:10,color:T.warning,padding:"2px 4px",background:"rgba(245,158,11,0.06)",borderRadius:3,marginBottom:2}}>🔧 {j.extraIssues}</div>}
+          {j.waitingParts&&<div style={{fontSize:11,color:"#fff",fontWeight:600,padding:"3px 6px",background:T.danger,borderRadius:4,marginBottom:2}}>⏳ {LL.waitingParts}{j.partsDetail?`: ${j.partsDetail}`:""}</div>}
+          {(j.status==="redo-flagged"||j.redoReason)&&<div style={{fontSize:12,color:"#fff",fontWeight:700,padding:"5px 8px",background:T.danger,borderRadius:5,marginBottom:2,lineHeight:1.4}}>⚠ {LL.redoIssue}: {j.redoReason||"—"}{j.redoRemark?` — ${j.redoRemark}`:""}{j.redoSubJobs?`\n→ ${j.redoSubJobs}`:""}</div>}
+          <div style={{display:"flex",gap:8,fontSize:9,color:T.dim,flexWrap:"wrap"}}><span>{Ic.clk} In: {fD(j.dateIn)}</span>{j.dateDone&&<span>{Ic.chk} Done: {fD(j.dateDone)}</span>}</div>
+          {j.component==="glass"&&j.status==="completed"&&(()=>{const invIt=inv.find(i=>(j.imei&&i.imei===j.imei)||(j.serial&&i.serial&&i.serial.toUpperCase()===j.serial.toUpperCase()));if(!invIt)return null;return invIt.lcdFault?<div style={{marginTop:4,padding:"3px 6px",borderRadius:4,background:"rgba(239,68,68,0.1)",color:T.danger,fontSize:11,fontWeight:600}}>🔴 LCD: {invIt.lcdFault}</div>:<div style={{marginTop:4,padding:"3px 6px",borderRadius:4,background:"rgba(16,185,129,0.08)",color:T.success,fontSize:11}}>LCD: ✅ OK</div>;})()}
+        </div>
+        <div className="fxJA" style={{display:"flex",gap:3,flexWrap:"wrap",alignItems:"flex-start"}}>
+          {canAct&&!isSvc&&<><button onClick={()=>startEdit(j)} style={{...gB,padding:"4px 7px",fontSize:10}}>{Ic.edt}<span className="fxBTxt"> {LL.edit}</span></button>{j.jobType==="Redo"&&<button onClick={()=>{setEscJob(j);setEscReason("");}} style={{...bB,padding:"4px 7px",fontSize:10,background:T.warning,color:"#fff"}}>{Ic.tri}<span className="fxBTxt"> {LL.escalate}</span></button>}<button onClick={()=>{if(confirm(lang==="cn"?"确认完成？":"Confirm done?"))db.setJobStatus(j.id,j.jobType==="Redo"?"qc-pending":"completed");}} style={{...bB,padding:"4px 7px",fontSize:10,background:T.success,color:"#fff"}}>{Ic.chk}<span className="fxBTxt"> {LL.done}</span></button><button onClick={()=>{setCfJob(j);setCfReason("");setCfTried("");}} style={{...bB,padding:"4px 7px",fontSize:10,background:T.danger,color:"#fff"}}>{Ic.tri}<span className="fxBTxt"> {LL.cannotFix}</span></button></>}
+          {j.status==="qc-pending"&&<div style={{padding:"4px 7px",borderRadius:4,background:"rgba(249,115,22,0.1)",fontSize:10,color:T.qcO,fontWeight:600}}>{LL.awaitQC}</div>}
+          {j.status==="redo-flagged"&&!canAct&&<div style={{padding:"4px 7px",borderRadius:4,background:"rgba(239,68,68,0.1)",fontSize:10,color:T.danger,fontWeight:600}}>❌ {LL.flagRedo}</div>}
         </div>
       </div>
     </div>
-  );
+  );};
+
+  return (<div style={{padding:"14px 12px",maxWidth:900,margin:"0 auto"}}><style>{mCSS}</style>
+    {urgentOrders.length>0&&<div style={{marginBottom:10,display:"grid",gap:4}}>{urgentOrders.map(o=>{const byr=(buyers||[]).find(b=>b.id===o.buyer_id);const prog=getOrdProg(o.id);return <div key={o.id} style={{padding:"8px 12px",borderRadius:8,background:o.priority==="urgent"?"rgba(239,68,68,0.1)":"rgba(245,158,11,0.1)",border:`1px solid ${o.priority==="urgent"?"rgba(239,68,68,0.3)":"rgba(245,158,11,0.3)"}`,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}><span style={{fontSize:14}}>{o.priority==="urgent"?"\uD83D\uDD34":"\uD83D\uDFE1"}</span><span style={{fontWeight:700,fontSize:12,color:o.priority==="urgent"?T.danger:T.warning,textTransform:"uppercase"}}>{o.priority}</span><span style={{color:T.text,fontSize:12,fontWeight:600}}>{byr?.name||"—"}</span>{o.delivery_date&&<span style={{color:T.dim,fontSize:11}}>— {LL.deadline} {o.delivery_date}</span>}<span style={{color:T.muted,fontSize:11,marginLeft:"auto"}}>({prog.done}/{prog.total} {LL.unitsDone})</span></div>;})}</div>}
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14}}>
+      <div className="fxS fxTSG" style={{display:"flex",gap:7,flexWrap:"wrap",flex:1}}><SC icon={Ic.wrn} label={LL.today} value={myT.length} color={T.accent}/><SC icon={Ic.chk} label={LL.done} value={myT.filter(j=>j.status==="completed"||j.status==="qc-pending").length} color={T.success}/><SC icon={Ic.clk} label={LL.active} value={myT.filter(j=>j.status==="in-progress"||j.status==="partial").length} color={T.warning}/><SC icon={Ic.rdo} label={LL.redo} value={myT.filter(j=>j.jobType==="Redo").length} color={T.danger}/></div>
+      <button onClick={()=>setShowNotif(true)} style={{background:unseenRedo.length>0?"rgba(239,68,68,0.15)":T.card,border:`1px solid ${unseenRedo.length>0?T.danger:T.border}`,borderRadius:8,width:38,height:38,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",position:"relative",flexShrink:0,marginLeft:8}}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={unseenRedo.length>0?T.danger:T.muted} strokeWidth="2" strokeLinecap="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>{unseenRedo.length>0&&<span style={{position:"absolute",top:-4,right:-4,width:18,height:18,borderRadius:"50%",background:T.danger,color:"#fff",fontSize:11,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center"}}>{unseenRedo.length}</span>}</button>
+    </div>
+    {showNotif&&<Mod title={`🔔 ${LL.notifications}`} onClose={()=>setShowNotif(false)} w="500px">
+      {unseenRedo.length===0?<div style={{textAlign:"center",padding:24,color:T.dim,fontSize:13}}>{LL.noNotif}</div>:(
+        <div style={{display:"grid",gap:6}}>{unseenRedo.map(j=>(
+          <div key={j.id} style={{background:"rgba(239,68,68,0.06)",border:`1.5px solid rgba(239,68,68,0.3)`,borderRadius:8,padding:"10px 12px"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:6}}>
+              <div style={{flex:1}}>
+                <div style={{color:T.danger,fontWeight:700,fontSize:14,marginBottom:3}}>⚠ {LL.redoIssue}</div>
+                <div style={{color:T.text,fontWeight:600,fontSize:13,marginBottom:2}}>{j.model}{j.storage?` · ${j.storage}`:""}{j.color?` · ${j.color}`:""}</div>
+                <div style={{fontSize:11,fontFamily:"monospace",color:T.muted,marginBottom:3}}>{j.imei&&<span style={{color:T.accent}}>I:{j.imei} </span>}{j.serial&&<span style={{color:T.purple}}>S:{j.serial}</span>}</div>
+                <div style={{fontSize:12,color:"#fff",fontWeight:600,padding:"4px 8px",background:T.danger,borderRadius:5,marginBottom:3}}>{j.redoReason||"—"}{j.redoRemark?` — ${j.redoRemark}`:""}{j.redoSubJobs?` [${j.redoSubJobs}]`:""}</div>
+                {j.qcBy&&<div style={{fontSize:10,color:T.dim}}>{LL.flaggedBy}: {j.qcBy}</div>}
+                <div style={{fontSize:10,color:T.dim}}>{fD(j.dateDone||j.dateIn)}</div>
+              </div>
+              <button onClick={()=>db.markRedoSeen(j.id)} style={{...pB,padding:"5px 10px",fontSize:11,flexShrink:0}}>{LL.markSeen}</button>
+            </div>
+          </div>
+        ))}</div>
+      )}
+    </Mod>}
+    <div className="fxTb" style={{display:"flex",gap:3,marginBottom:12,flexWrap:"wrap",alignItems:"center"}}>{tMainTabs.map(t=><button key={t.k} onClick={()=>{setTab(t.k);setTOpenMenu(false);}} style={{...gB,background:tab===t.k?"rgba(201,168,76,0.12)":"transparent",color:tab===t.k?T.accent:T.dim,borderColor:tab===t.k?"rgba(201,168,76,0.3)":T.border,fontSize:12,whiteSpace:"nowrap",padding:"6px 10px",position:"relative"}}>{t.l}{t.b>0&&<span style={{marginLeft:4,padding:"1px 5px",borderRadius:8,background:T.danger,color:"#fff",fontSize:9,fontWeight:700}}>{t.b}</span>}</button>)}
+      <div style={{position:"relative"}}>{(()=>{const isActive=tMoreItems.some(t=>t.k===tab);return<><button onClick={()=>setTOpenMenu(!tOpenMenu)} style={{...gB,background:isActive?"rgba(201,168,76,0.12)":"transparent",color:isActive?T.accent:T.dim,borderColor:isActive?"rgba(201,168,76,0.3)":T.border,fontSize:12,padding:"6px 10px",whiteSpace:"nowrap"}}>More {tOpenMenu?"▲":"▼"}{tMoreItems.some(t=>t.b>0)&&<span style={{marginLeft:3,width:6,height:6,borderRadius:"50%",background:T.danger,display:"inline-block"}}/>}</button>
+        {tOpenMenu&&<div style={{position:"absolute",top:"100%",left:0,zIndex:50,background:T.card,border:`1px solid ${T.border}`,borderRadius:8,padding:4,minWidth:160,boxShadow:"0 8px 24px rgba(0,0,0,0.3)",display:"flex",flexDirection:"column",gap:2}}>{tMoreItems.map(t=><button key={t.k} onClick={()=>{setTab(t.k);setTOpenMenu(false);}} style={{...gB,background:tab===t.k?"rgba(201,168,76,0.12)":"transparent",color:tab===t.k?T.accent:T.dim,borderColor:tab===t.k?"rgba(201,168,76,0.3)":T.border,fontSize:12,padding:"6px 10px",whiteSpace:"nowrap"}}>{t.l}{t.b>0&&<span style={{marginLeft:4,padding:"1px 5px",borderRadius:8,background:T.danger,color:"#fff",fontSize:9,fontWeight:700}}>{t.b}</span>}</button>)}</div>}</>})()}
+      </div>{tOpenMenu&&<div onClick={()=>setTOpenMenu(false)} style={{position:"fixed",inset:0,zIndex:40}}/>}
+    </div>
+    {tab==="repair"&&<div><div style={{display:"flex",gap:5,marginBottom:10}}><button onClick={()=>{setForm(ef);setShowForm(true);}} style={{...pB,flex:1,justifyContent:"center",padding:11,fontSize:14,borderRadius:9}}>{Ic.cam} {LL.repair}</button>{lastJob&&<button onClick={startRepeat} style={{...bB,background:T.purple,color:"#fff",padding:"11px 14px",fontSize:13,borderRadius:9}} title={LL.repeatJob}>{Ic.rdo} {LL.repeatJob}</button>}</div>{(()=>{const active=my.filter(j=>j.mode!=="service"&&j.status!=="completed"&&j.status!=="qc-pending");return active.length===0?<div style={{textAlign:"center",padding:28,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`,fontSize:12}}>{LL.noJobs}</div>:<div style={{display:"grid",gap:6}}>{active.slice(0,25).map(j=><JC key={j.id} j={j}/>)}</div>;})()}</div>}
+    {tab==="service"&&<div><button onClick={()=>{setForm(ef);setShowForm(true);}} style={{...bB,width:"100%",justifyContent:"center",padding:11,fontSize:14,borderRadius:9,marginBottom:10,background:T.purple,color:"#fff"}}>{Ic.svc} {LL.service} — {LL.serviceDesc}</button>{my.filter(j=>j.mode==="service").length===0?<div style={{textAlign:"center",padding:28,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`,fontSize:12}}>{LL.noJobs}</div>:<div style={{display:"grid",gap:6}}>{my.filter(j=>j.mode==="service").slice(0,25).map(j=><JC key={j.id} j={j}/>)}</div>}</div>}
+    {tab==="myJobs"&&<div><div style={{display:"flex",gap:5,marginBottom:10,alignItems:"center",flexWrap:"wrap"}}><input type="date" value={myD1} onChange={e=>setMyD1(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px",colorScheme:"dark"}}/><span style={{color:T.dim,fontSize:11}}>→</span><input type="date" value={myD2} onChange={e=>setMyD2(e.target.value)} style={{...bI,width:"auto",fontSize:12,padding:"5px 7px",colorScheme:"dark"}}/><button onClick={()=>exXL(jobs,techs,myD1,myD2,tech.id,inv)} style={{...gB,padding:"5px 9px",fontSize:11}}>{Ic.dl} {LL.downloadExcel}</button><span style={{color:T.dim,fontSize:11}}>{my.filter(j=>inRange(j.dateIn,myD1,myD2)).length} jobs</span></div>{(()=>{const dated=my.filter(j=>inRange(j.dateIn,myD1,myD2));if(dated.length===0)return <div style={{textAlign:"center",padding:28,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`,fontSize:12}}>{LL.noJobs}</div>;
+const grouped={};dated.forEach(j=>{const key=j.imei||j.serial||j.id;if(!grouped[key])grouped[key]=[];grouped[key].push(j);});
+return <div style={{display:"grid",gap:6}}>{Object.entries(grouped).map(([key,unitJobs])=>{const first=unitJobs[0];const invIt=inv.find(i=>(first.imei&&i.imei===first.imei)||(first.serial&&i.serial&&i.serial.toUpperCase()===first.serial.toUpperCase()));
+const repairJobs=unitJobs.filter(j=>j.component==="full"||!j.component);const glassJobs=unitJobs.filter(j=>j.component==="glass");const cameraJobs=unitJobs.filter(j=>j.component==="camera");const housingJobs=unitJobs.filter(j=>j.component==="housing");
+const latestRepair=repairJobs.sort((a,b)=>new Date(b.dateIn)-new Date(a.dateIn))[0];const canAct=latestRepair&&(latestRepair.status==="in-progress"||latestRepair.status==="partial");
+const d=latestRepair?daysOpen(latestRepair.dateIn):0;
+return <div key={key} style={{background:T.card,borderRadius:8,padding:"10px 12px",border:`1px solid ${T.border}`,borderLeft:`3px solid ${latestRepair?(latestRepair.status==="redo-flagged"?T.danger:latestRepair.jobType==="Redo"?T.danger:latestRepair.status==="completed"?T.success:latestRepair.status==="qc-pending"?T.qcO:T.warning):T.accent}`}}>
+{/* Header */}
+<div style={{display:"flex",gap:3,marginBottom:3,flexWrap:"wrap"}}>{invIt?.codeId&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:10,fontWeight:700,background:"rgba(245,158,11,0.15)",color:T.warning}}>{invIt.codeId}</span>}{latestRepair&&<><TB t={latestRepair.jobType}/><SB s={latestRepair.status} lang={lang}/></>}{!latestRepair&&unitJobs[0]?.mode==="service"&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:8,background:"rgba(139,92,246,0.1)",color:T.purple}}>SVC</span>}{latestRepair&&!latestRepair.dateDone&&d>0&&<span style={{padding:"1px 4px",borderRadius:3,fontSize:9,fontWeight:700,background:d>=3?"rgba(239,68,68,0.15)":"rgba(245,158,11,0.15)",color:d>=3?T.danger:T.warning}}>{d} {LL.daysWith}</span>}</div>
+<div style={{color:T.text,fontWeight:600,fontSize:13,marginBottom:1}}>{first.model}{first.storage?` · ${first.storage}`:""}{first.color?` · ${first.color}`:""}</div>
+<div className="fxIMEI" style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:2,fontSize:10,fontFamily:"monospace"}}>{first.batch&&<span style={{color:T.dim}}>B:{first.batch}</span>}{first.imei&&<span style={{color:T.accent}}>I:{first.imei}</span>}{first.serial&&<span style={{color:T.purple}}>S:{first.serial}</span>}</div>
+
+{/* Repair section */}
+{latestRepair&&<div style={{marginTop:4}}>
+<SJBadges sjs={latestRepair.subJobs} lang={lang} allSJ={subJobs}/>
+{latestRepair.remark&&<div style={{fontSize:10,color:T.muted,padding:"2px 4px",background:T.inputBg,borderRadius:3,marginBottom:2}}>{latestRepair.remark}</div>}
+{latestRepair.extraIssues&&<div style={{fontSize:10,color:T.warning,padding:"2px 4px",background:"rgba(245,158,11,0.06)",borderRadius:3,marginBottom:2}}>🔧 {latestRepair.extraIssues}</div>}
+{latestRepair.waitingParts&&<div style={{fontSize:11,color:"#fff",fontWeight:600,padding:"3px 6px",background:T.danger,borderRadius:4,marginBottom:2}}>⏳ {LL.waitingParts}{latestRepair.partsDetail?`: ${latestRepair.partsDetail}`:""}</div>}
+{(latestRepair.status==="redo-flagged"||latestRepair.redoReason)&&<div style={{fontSize:12,color:"#fff",fontWeight:700,padding:"5px 8px",background:T.danger,borderRadius:5,marginBottom:2,lineHeight:1.4}}>⚠ {LL.redoIssue}: {latestRepair.redoReason||"—"}{latestRepair.redoRemark?` — ${latestRepair.redoRemark}`:""}{latestRepair.redoSubJobs?`\n→ ${latestRepair.redoSubJobs}`:""}</div>}
+<div className="fxJA" style={{display:"flex",gap:3,flexWrap:"wrap",marginTop:3}}>
+{canAct&&<><button onClick={()=>startEdit(latestRepair)} style={{...gB,padding:"4px 7px",fontSize:10}}>{Ic.edt}<span className="fxBTxt"> {LL.edit}</span></button>{latestRepair.jobType==="Redo"&&<button onClick={()=>{setEscJob(latestRepair);setEscReason("");}} style={{...bB,padding:"4px 7px",fontSize:10,background:T.warning,color:"#fff"}}>{Ic.tri}<span className="fxBTxt"> {LL.escalate}</span></button>}<button onClick={()=>db.setJobStatus(latestRepair.id,"qc-pending")} style={{...bB,padding:"4px 7px",fontSize:10,background:T.success,color:"#fff"}}>{Ic.chk}<span className="fxBTxt"> {LL.done}</span></button><button onClick={()=>{setCfJob(latestRepair);setCfReason("");setCfTried("");}} style={{...bB,padding:"4px 7px",fontSize:10,background:T.danger,color:"#fff"}}>{Ic.tri}<span className="fxBTxt"> {LL.cannotFix}</span></button></>}
+{latestRepair.status==="qc-pending"&&<div style={{padding:"4px 7px",borderRadius:4,background:"rgba(249,115,22,0.1)",fontSize:10,color:T.qcO,fontWeight:600}}>{LL.awaitQC}</div>}
+{latestRepair.status==="redo-flagged"&&!canAct&&<div style={{padding:"4px 7px",borderRadius:4,background:"rgba(239,68,68,0.1)",fontSize:10,color:T.danger,fontWeight:600}}>❌ {LL.flagRedo}</div>}
+</div>
+</div>}
+
+{/* Glass line */}
+{glassJobs.length>0&&<div style={{display:"flex",gap:3,flexWrap:"wrap",alignItems:"center",marginTop:3}}><span style={{fontSize:9,color:T.accent,fontWeight:700}}>🔲 Glass:</span>{glassJobs.map((gj,gi)=><span key={gi} style={{padding:"1px 5px",borderRadius:3,fontSize:9,background:"rgba(201,168,76,0.12)",color:T.accent}}>{gj.remark?gj.remark.replace("Glass: ",""):sjS(gj.subJobs)||"Done"}</span>)}
+{(()=>{const glassInv=inv.find(i=>(first.imei&&i.imei===first.imei));if(!glassInv)return null;return glassInv.lcdFault?<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:700,background:"rgba(239,68,68,0.12)",color:T.danger}}>LCD: {glassInv.lcdFault}</span>:<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,background:"rgba(16,185,129,0.1)",color:T.success}}>LCD: OK</span>;})()}
+</div>}
+
+{/* Camera line */}
+{cameraJobs.length>0&&<div style={{display:"flex",gap:3,flexWrap:"wrap",alignItems:"center",marginTop:3}}><span style={{fontSize:9,color:T.purple,fontWeight:700}}>📷 Cam:</span>{cameraJobs.map((cj,ci)=><span key={ci} style={{padding:"1px 5px",borderRadius:3,fontSize:9,background:"rgba(139,92,246,0.12)",color:T.purple}}>{cj.remark?cj.remark.replace("Camera: ","").replace("Camera ",""):sjS(cj.subJobs)||"Done"}</span>)}</div>}
+
+{/* Housing line */}
+{housingJobs.length>0&&<div style={{display:"flex",gap:3,flexWrap:"wrap",alignItems:"center",marginTop:3}}><span style={{fontSize:9,color:T.warning,fontWeight:700}}>🏠 Housing:</span>{housingJobs.map((hj,hi)=><span key={hi} style={{padding:"1px 5px",borderRadius:3,fontSize:9,background:"rgba(245,158,11,0.12)",color:T.warning}}>{hj.remark?hj.remark.replace("Housing: ",""):sjS(hj.subJobs)||"Done"}</span>)}</div>}
+
+{/* Footer date */}
+<div style={{display:"flex",gap:8,fontSize:9,color:T.dim,flexWrap:"wrap",marginTop:3}}><span>{Ic.clk} In: {fD(first.dateIn)}</span>{latestRepair?.dateDone&&<span>{Ic.chk} Done: {fD(latestRepair.dateDone)}</span>}</div>
+</div>;})}</div>;})()}</div>}
+    {tab==="glass"&&<div><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{LL.glassService}{glassSJ?` — ${sjN(glassSJ,lang)}`:""}</h3>
+      <div style={{display:"flex",gap:4,marginBottom:10}}><button onClick={()=>{setGlassView("glass");setGsLcdChecked({});}} style={{...gB,padding:"8px 16px",fontSize:13,fontWeight:700,background:glassView==="glass"?"rgba(201,168,76,0.12)":"transparent",color:glassView==="glass"?T.accent:T.dim,borderColor:glassView==="glass"?T.accent:T.border}}>{"🔲 Glass Service"}</button><button onClick={()=>{setGlassView("lcd");setGsChecked({});setGsBulkOpt([]);}} style={{...gB,padding:"8px 16px",fontSize:13,fontWeight:700,background:glassView==="lcd"?"rgba(239,68,68,0.12)":"transparent",color:glassView==="lcd"?T.danger:T.dim,borderColor:glassView==="lcd"?T.danger:T.border}}>{"🔴 LCD Issue"}</button></div>
+      {glassView==="glass"&&<><div style={{display:"flex",gap:5,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
+        {!gsBulkMode?<>
+          <select value={gsBatch} onChange={e=>{setGsBatch(e.target.value);setGsChecked({});setGsBulkOpt([]);setGsSearch("");}} style={{...bI,width:"auto",fontSize:12,padding:"8px 10px"}}><option value="">{LL.selectBatch}...</option>{[...new Set(inv.map(i=>i.batchId))].filter(Boolean).map(b=><option key={b} value={b}>{b} ({inv.filter(i=>i.batchId===b).length})</option>)}</select>
+          <div style={{position:"relative",flex:1,minWidth:120}}><input style={{...bI,paddingLeft:38,fontSize:12}} placeholder={LL.searchIMEI} value={gsSearch} onChange={e=>setGsSearch(e.target.value)}/><div style={{position:"absolute",left:7,top:"50%",transform:"translateY(-50%)",color:T.dim}}>{Ic.srch}</div></div>
+          <button onClick={()=>{setGsBulkMode(true);setGsBulkQ("");}} style={{...gB,padding:"6px 10px",fontSize:11}}>{LL.bulkSearch}</button>
+        </>:<>
+          <textarea style={{...bI,minHeight:55,fontSize:12,fontFamily:"monospace",flex:1}} placeholder={LL.bulkHint} value={gsBulkQ} onChange={e=>setGsBulkQ(e.target.value)}/>
+          <button onClick={()=>{setGsBulkMode(false);setGsBulkQ("");}} style={{...gB,padding:"6px 10px",fontSize:11}}>{Ic.x}</button>
+        </>}
+      </div>
+      {(()=>{let gsItems=[];
+        if(gsBulkMode&&gsBulkQ.trim()){const terms=gsBulkQ.split("\n").map(s=>s.trim().toUpperCase()).filter(Boolean);gsItems=inv.filter(i=>terms.some(t=>(i.imei&&i.imei.includes(t))||(i.serial&&i.serial.toUpperCase().includes(t))||(i.codeId&&i.codeId.toUpperCase().includes(t))));}
+        else if(gsSearch.trim()){const q=gsSearch.trim().toLowerCase();gsItems=inv.filter(i=>(i.imei&&i.imei.includes(gsSearch))||(i.serial&&i.serial.toLowerCase().includes(q))||(i.codeId&&i.codeId.toLowerCase().includes(q))||(i.product&&i.product.toLowerCase().includes(q)));}
+        else if(gsBatch){gsItems=inv.filter(i=>i.batchId===gsBatch);}
+        else return null;
+        if(gsItems.length===0)return <div style={{textAlign:"center",padding:20,color:T.dim,background:T.card,borderRadius:10,border:"1px solid "+T.border,fontSize:12}}>{LL.noResults}</div>;
+        const gsFiltered=svcFilterItems(gsItems,gsFilter,"glassStatus","glass");
+        return <div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,padding:12}}>
+    {svcFilterBar(gsFilter,setGsFilter)}
+    <div style={{display:"flex",gap:4,marginBottom:8,flexWrap:"wrap",alignItems:"center"}}><button onClick={()=>{const items=gsFiltered.filter(i=>i.glassStatus!=="serviced");const m={...gsChecked};items.forEach(i=>m[i._dbId]=true);setGsChecked(m);}} style={{...gB,fontSize:10,padding:"4px 8px"}}>{LL.selectAll}</button><button onClick={()=>{setGsChecked({});setGsBulkOpt([]);}} style={{...gB,fontSize:10,padding:"4px 8px"}}>{LL.clearAll}</button><span style={{color:T.muted,fontSize:11}}>{Object.values(gsChecked).filter(Boolean).length} {LL.selected}</span><span style={{color:T.success,fontSize:10,marginLeft:"auto"}}>{gsItems.filter(i=>i.glassStatus==="serviced").length}/{gsItems.length}</span></div>
+    <div style={{display:"grid",gap:4}}>{gsFiltered.map(it=>{const done=it.glassStatus==="serviced";const sel=!!gsChecked[it._dbId];return <div key={it._dbId} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",background:done?"rgba(16,185,129,0.06)":sel?"rgba(201,168,76,0.08)":"transparent",borderRadius:6,border:`1px solid ${done?T.success:sel?T.accent:T.border}`,flexWrap:"wrap"}}>
+      <div onClick={()=>{if(!done)setGsChecked(p=>({...p,[it._dbId]:!p[it._dbId]}));}} style={{display:"flex",alignItems:"center",gap:8,cursor:done?"default":"pointer",opacity:done?0.6:1,flex:1,minWidth:150}}>
+        <input type="checkbox" checked={done||sel} disabled={done} readOnly={!done} style={{width:16,height:16}}/>
+        <span style={{color:T.warning,fontWeight:700,fontSize:13,minWidth:50}}>{it.grade||"—"}</span>
+        {(()=>{const oi=(orderItems||[]).find(x=>x.inventory_id===it._dbId);if(!oi)return null;const ord=(buyerOrders||[]).find(x=>x.id===oi.order_id);if(!ord||ord.priority==="normal")return null;return <span style={{padding:"1px 4px",borderRadius:3,fontSize:8,fontWeight:700,background:ord.priority==="urgent"?"rgba(239,68,68,0.15)":"rgba(245,158,11,0.15)",color:ord.priority==="urgent"?T.danger:T.warning}}>{ord.priority.toUpperCase()}</span>;})()}
+        <span style={{color:T.text,fontSize:12}}>{it.product}{it.size?` · ${it.size}`:""}{it.color?` · ${it.color}`:""}</span>
+        {it.imei&&<div style={{fontSize:13,color:T.accent,fontFamily:"monospace",fontWeight:600}}>{it.imei}</div>}
+        {it.conditionRemark&&<span style={{fontSize:9,color:T.warning,padding:"1px 4px",background:"rgba(217,119,6,0.08)",borderRadius:3}}>⚠ {it.conditionRemark}</span>}
+        {done&&<span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:600,background:T.success,color:"#fff"}}>{LL.done}</span>}
+        {it.redoHistory&&it.redoHistory.filter(r=>r.type==="glass").length>0&&(()=>{const gr=it.redoHistory.filter(r=>r.type==="glass");const pending=it.glassStatus!=="serviced";return <span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:700,background:pending?"rgba(239,68,68,0.15)":"rgba(16,185,129,0.15)",color:pending?T.danger:T.success}} title={gr.map(r=>r.reason+" ("+r.flaggedBy+")").join(", ")}>{pending?"REDO":"REDO ✓"}{gr.length>1?" x"+gr.length:""}</span>;})()}
+        {(it.glassServicing||[]).length>0&&<span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(139,92,246,0.15)",color:T.purple}}>{(it.glassServicing||[]).length} svc</span>}
+        {(()=>{const rc=(it.stepLog||[]).filter(l=>l.type==="glass_reserviced"||l.type==="admin_reopen_glass").length;return rc>0?<span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:700,background:"rgba(59,130,246,0.15)",color:"#3b82f6"}}>Reopened x{rc}</span>:null;})()}
+        {done&&<button onClick={async(e)=>{e.stopPropagation();if(!confirm("Reserviced this unit? It will reopen for rework."))return;const now=new Date().toISOString();await db.updateInvStatus(it._dbId,{glassStatus:"service",glassServicing:[],stepLog:[{type:"glass_reserviced",techId:tech.id,techName:tech.name,at:now}]});}} style={{background:"rgba(59,130,246,0.1)",border:"1px solid rgba(59,130,246,0.3)",color:"#3b82f6",cursor:"pointer",fontSize:11,padding:"2px 8px",borderRadius:4,fontWeight:600,whiteSpace:"nowrap"}} title="Reserviced — reopen for rework">🔄</button>}
+        {(()=>{const hasQcJob=jobs.some(j=>j.status==="qc-pending"&&j.component==="full"&&!j.deleted&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())));return hasQcJob?<span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:600,background:"rgba(16,185,129,0.1)",color:T.success,whiteSpace:"nowrap"}}>✅ QC</span>:<button onClick={async(e)=>{e.stopPropagation();if(!confirm(LL.confirmQC||"Confirm send to QC Pending?"))return;await db.createJob({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:[],remark:"Sent to QC by "+tech.name,qty:1,status:"qc-pending",mode:"repair",component:"full",qcBy:""});}} style={{...bB,padding:"2px 8px",fontSize:10,background:T.success,color:"#fff",borderRadius:4,whiteSpace:"nowrap"}}>📋 QC</button>;})()}
+      </div>
+      {/* Glass Servicing tags display */}
+      {(it.glassServicing||[]).length>0&&<div style={{display:"flex",gap:3,flexWrap:"wrap",marginTop:4}}>
+        {(it.glassServicing||[]).map(o=><span key={o} style={{display:"inline-flex",alignItems:"center",gap:3,padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:"rgba(139,92,246,0.15)",color:T.purple}}>{o}{!done&&<button onClick={async(e)=>{e.stopPropagation();const next=(it.glassServicing||[]).filter(x=>x!==o);await db.updateInvStatus(it._dbId,{glassServicing:next});}} style={{background:"rgba(239,68,68,0.15)",border:"none",color:T.danger,cursor:"pointer",fontSize:16,padding:"2px 6px",borderRadius:4,marginLeft:2,lineHeight:1}}>×</button>}</span>)}
+      </div>}
+      {done&&<div style={{marginTop:4}}>
+        <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap",marginBottom:4}}>
+          <select style={{...bI,width:"auto",fontSize:11,padding:"4px 6px",border:`1px solid ${it.glassShadow&&it.glassShadow!=="SS"?T.warning:it.glassShadow==="SS"?T.accent:T.border}`,color:it.glassShadow?T.warning:T.text}} value={it.glassShadow||""} onChange={async e=>{const v=e.target.value;await db.updateInvStatus(it._dbId,{glassShadow:v,glassShadowRemark:v===""||v==="SS"?"":it.glassShadowRemark});}} onClick={e=>e.stopPropagation()}><option value="">{LL.noShadow}</option><option value="SS">{LL.ssSmall}</option><option value="MS">{LL.msMid}</option><option value="DS">{LL.dsDeep}</option></select>
+          {it.glassShadow&&it.glassShadow!=="SS"&&<input style={{...bI,width:120,fontSize:11,padding:"4px 6px",border:`1px solid ${T.warning}`}} placeholder={LL.shadowRemark} defaultValue={it.glassShadowRemark||""} onBlur={e=>db.updateInvStatus(it._dbId,{glassShadowRemark:e.target.value})} onClick={e=>e.stopPropagation()}/>}
+        </div>
+        <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
+          <select onChange={async e=>{const o=e.target.value;if(!o)return;e.target.value="";const cur=it.lcdFaults||[];if(cur.includes(o))return;const next=[...cur,o];await db.updateInvStatus(it._dbId,{lcdFaults:next,lcdFault:next[0]||""});}} onClick={e=>e.stopPropagation()} style={{...bI,width:"auto",fontSize:11,padding:"4px 6px",color:T.danger}} defaultValue=""><option value="">{"🔲 + "+LL.glassIssue}</option>{(lcdOpts.length?lcdOpts:["LCD Crack","Dead Pixel","Touch Fault","Backlight Issue"]).filter(o=>!(it.lcdFaults||[]).includes(o)).map(o=><option key={o} value={o}>{o}</option>)}</select>
+          {(it.lcdFaults||[]).length===0&&!it.lcdFault&&<span style={{fontSize:10,color:T.success,fontWeight:600}}>✅ OK</span>}
+          {it.lcdFault&&(it.lcdFaults||[]).length===0&&<span style={{display:"inline-flex",alignItems:"center",gap:3,padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:"rgba(239,68,68,0.15)",color:T.danger}}>{it.lcdFault}<button onClick={async(e)=>{e.stopPropagation();await db.updateInvStatus(it._dbId,{lcdFault:""});}} style={{background:"rgba(239,68,68,0.15)",border:"none",color:T.danger,cursor:"pointer",fontSize:16,padding:"2px 6px",borderRadius:4,marginLeft:2,lineHeight:1}}>×</button></span>}
+          {(it.lcdFaults||[]).map(o=><span key={o} style={{display:"inline-flex",alignItems:"center",gap:3,padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:"rgba(239,68,68,0.15)",color:T.danger}}>{o}<button onClick={async(e)=>{e.stopPropagation();const next=(it.lcdFaults||[]).filter(x=>x!==o);await db.updateInvStatus(it._dbId,{lcdFaults:next,lcdFault:next[0]||""});}} style={{background:"rgba(239,68,68,0.15)",border:"none",color:T.danger,cursor:"pointer",fontSize:16,padding:"2px 6px",borderRadius:4,marginLeft:2,lineHeight:1}}>×</button></span>)}
+        </div>
+        {(it.lcdFaults||[]).length>0&&<input style={{...bI,fontSize:11,padding:"4px 6px",marginTop:4,border:`1px solid ${it.lcdFaultsRemark?T.danger:T.border}`}} placeholder={LL.glassIssueRemark} defaultValue={it.lcdFaultsRemark||""} onBlur={e=>db.updateInvStatus(it._dbId,{lcdFaultsRemark:e.target.value})} onClick={e=>e.stopPropagation()}/>}
+        {/* Parts Used - Glass */}
+        {PARTS_ENABLED&&(()=>{const isTS=(p)=>{const n=p.name.toLowerCase();return n.includes("ts")||n.includes("touch");};const isLCD=(p)=>p.category==="LCD";const showInDrop=(p)=>(p.category==="Glass"&&isTS(p))||isLCD(p);const gParts=(partsInv||[]).filter(p=>(p.category==="Glass"||p.category==="LCD"||p.category==="Screen")&&showInDrop(p)&&matchPartModel(p.model,it.product)&&p.qty>0&&!(it.partsUsed||[]).some(pu=>pu.id===p.id));const usedG=(it.partsUsed||[]).filter(pu=>pu.category==="Glass"||pu.category==="LCD"||pu.category==="Screen");return(gParts.length>0||usedG.length>0);})()&&<div style={{marginTop:6}}>
+          <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
+            <select onChange={async e=>{const pid=parseInt(e.target.value);if(!pid)return;e.target.value="";const part=(partsInv||[]).find(p=>p.id===pid);if(!part)return;if(part.qty<=0){alert(LL.outOfStock||"Out of stock!");return;}const cur=it.partsUsed||[];if(cur.some(pu=>pu.id===pid))return;const next=[...cur,{id:pid,name:part.name,category:part.category,usedAt:new Date().toISOString()}];await db.updateInvStatus(it._dbId,{partsUsed:next});await db.usePart(pid,1);}} onClick={e=>e.stopPropagation()} style={{...bI,width:"auto",fontSize:11,padding:"4px 6px",color:T.accent}} defaultValue=""><option value="">{"🔩 + TS/LCD"}</option>{(partsInv||[]).filter(p=>{const isTS=p.category==="Glass"&&(p.name.toLowerCase().includes("ts")||p.name.toLowerCase().includes("touch"));const isLCD=p.category==="LCD";return(isTS||isLCD)&&matchPartModel(p.model,it.product)&&p.qty>0&&!(it.partsUsed||[]).some(pu=>pu.id===p.id);}).map(p=><option key={p.id} value={p.id}>{p.name}{p.grade?" · "+p.grade:""} [{p.qty}]</option>)}</select>
+            {(it.partsUsed||[]).filter(pu=>pu.category==="Glass"||pu.category==="LCD"||pu.category==="Screen").map(pu=><span key={pu.id} style={{display:"inline-flex",alignItems:"center",gap:3,padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:"rgba(201,168,76,0.15)",color:T.accent}}>{pu.name}<button onClick={async(e)=>{e.stopPropagation();const next=(it.partsUsed||[]).filter(x=>x.id!==pu.id);await db.updateInvStatus(it._dbId,{partsUsed:next});await db.restockPart(pu.id,1);}} style={{background:"rgba(239,68,68,0.15)",border:"none",color:T.danger,cursor:"pointer",fontSize:16,padding:"2px 6px",borderRadius:4,marginLeft:2,lineHeight:1}}>×</button></span>)}
+          </div>
+        </div>}
+      {/* Dynamic extra glass sub-jobs */}
+      {extraGlassSJs.map(sj=><DynTagSection key={sj._dbId} it={it} sj={sj} component="glass" color={T.purple} icon="🔧"/>)}
+      </div>}
+    </div>;})}</div>
+    {Object.values(gsChecked).filter(Boolean).length>0&&(glassSvcOpts.length>0||glassOpts.length>0)&&<div style={{marginTop:10,padding:10,background:"rgba(139,92,246,0.05)",borderRadius:8,border:`1px solid ${T.purple}`}}>
+      <h4 style={{color:T.purple,fontSize:12,fontWeight:700,margin:"0 0 6px"}}>🔧 Glass Servicing → {Object.values(gsChecked).filter(Boolean).length} units:</h4>
+      <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{[...glassSvcOpts,...glassOpts.filter(o=>!glassSvcOpts.includes(o))].map(o=>{const checked=gsBulkOpt.includes(o);return <label key={o} style={{display:"flex",alignItems:"center",gap:4,cursor:"pointer",padding:"6px 10px",borderRadius:5,background:checked?"rgba(139,92,246,0.15)":"transparent",border:`1px solid ${checked?T.purple:T.border}`}}><input type="checkbox" checked={checked} onChange={()=>setGsBulkOpt(p=>checked?p.filter(x=>x!==o):[...p,o])} style={{width:16,height:16,accentColor:T.purple}}/><span style={{fontSize:12,color:checked?T.purple:T.muted}}>{o}</span></label>;})}</div>
+      {gsBulkOpt.length>0&&<button onClick={async()=>{const ids=Object.keys(gsChecked).filter(k=>gsChecked[k]);if(!ids.length)return;const updates=ids.map(dbId=>{const it=inv.find(i=>i._dbId===parseInt(dbId));if(!it)return null;const cur=it.glassServicing||[];const next=[...new Set([...cur,...gsBulkOpt])];return{dbId:parseInt(dbId),glassServicing:next,glassStatus:it.glassStatus==="na"?"service":undefined};}).filter(Boolean);for(const u of updates){const fields={glassServicing:u.glassServicing};if(u.glassStatus)fields.glassStatus=u.glassStatus;await db.updateInvStatus(u.dbId,fields);}setGsBulkOpt([]);}} style={{...bB,width:"100%",justifyContent:"center",padding:"10px",fontSize:13,background:T.purple,color:"#fff",borderRadius:8,marginTop:8}}>Apply {gsBulkOpt.length} step{gsBulkOpt.length>1?"s":""} → {Object.values(gsChecked).filter(Boolean).length} units</button>}
+    </div>}
+    <div style={{display:"flex",gap:6,marginTop:10,flexWrap:"wrap"}}>
+      <button onClick={async()=>{const ids=Object.keys(gsChecked).filter(k=>gsChecked[k]);if(!ids.length)return;const now=new Date().toISOString();await db.bulkUpdateInvStatus(ids.map(dbId=>({dbId:parseInt(dbId),glassStatus:"serviced",stepLog:[{type:"glass_ok",techId:tech.id,techName:tech.name,at:now}]})));setGsChecked({});setGsBulkOpt([]);}} disabled={!Object.values(gsChecked).filter(Boolean).length} style={{...bB,flex:1,justifyContent:"center",padding:"12px 16px",fontSize:14,borderRadius:9,background:T.success,color:"#fff",opacity:Object.values(gsChecked).filter(Boolean).length?1:0.4,minWidth:120}}>{LL.markOK} ({Object.values(gsChecked).filter(Boolean).length})</button>
+      <button onClick={async()=>{const ids=Object.keys(gsChecked).filter(k=>gsChecked[k]);if(!ids.length)return;const selItems=ids.map(id=>inv.find(i=>i._dbId===parseInt(id))).filter(Boolean);const noSvc=selItems.filter(it=>!(it.glassServicing||[]).length);if(noSvc.length>0){const names=noSvc.slice(0,5).map(it=>it.product+(it.grade?" ("+it.grade+")":"")).join(", ")+(noSvc.length>5?" +"+( noSvc.length-5)+" more":"");if(!confirm(lang==="cn"?`${noSvc.length} 个单位还没有玻璃服务记录:\n${names}\n\n确定要继续 Frame 打支架？`:`${noSvc.length} unit(s) have no glass servicing yet:\n${names}\n\nProceed with Frame 打支架 anyway?`))return;}if(!confirm(lang==="cn"?"确认 Frame 打支架 — 关闭玻璃服务？":"Confirm Frame 打支架 — Close glass service?"))return;const now=new Date().toISOString();const jobsData=[];selItems.forEach(it=>{(it.glassServicing||[]).forEach(o=>{jobsData.push({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:glassSvcSJ?[{name:glassSvcSJ.name,option:o}]:[],remark:"Glass Svc: "+o,qty:1,status:"completed",dateDone:now,mode:"service",component:"glass"});});jobsData.push({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:glassSJ?[{name:glassSJ.name,option:"Frame 打支架"}]:[],remark:"Glass: Frame 打支架",qty:1,status:"completed",dateDone:now,mode:"service",component:"glass"});});await db.bulkCreateJobs(jobsData);await db.bulkUpdateInvStatus(ids.map(dbId=>({dbId:parseInt(dbId),glassStatus:"serviced",stepLog:[{type:"glass_frame",techId:tech.id,techName:tech.name,at:now}]})));
+      if(PARTS_ENABLED){for(const it of selItems){const glassPart=(partsInv||[]).find(p=>p.category==="Glass"&&p.name.toLowerCase().includes("glass")&&!p.name.toLowerCase().includes("frame")&&!p.name.toLowerCase().includes("ts")&&matchPartModel(p.model,it.product)&&p.qty>0);const framePart=(partsInv||[]).find(p=>p.category==="Glass"&&p.name.toLowerCase().includes("frame")&&matchPartModel(p.model,it.product)&&p.qty>0);if(glassPart)await db.usePart(glassPart.id,1);if(framePart)await db.usePart(framePart.id,1);}}
+      setGsChecked({});setGsBulkOpt([]);}} disabled={!Object.values(gsChecked).filter(Boolean).length} style={{...bB,flex:1,justifyContent:"center",padding:"12px 16px",fontSize:14,borderRadius:9,background:T.warning,color:"#fff",opacity:Object.values(gsChecked).filter(Boolean).length?1:0.4,minWidth:120}}>🔲 Frame 打支架 ({Object.values(gsChecked).filter(Boolean).length})</button>
+    </div>
+    </div>;})()}
+    </>}
+    {glassView==="lcd"&&<div>
+      <div style={{display:"flex",gap:5,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
+        {!gsBulkMode?<>
+          <select value={gsBatch} onChange={e=>{setGsBatch(e.target.value);setGsLcdChecked({});setGsSearch("");}} style={{...bI,width:"auto",fontSize:12,padding:"8px 10px"}}><option value="">{LL.selectBatch}...</option>{[...new Set(inv.map(i=>i.batchId))].filter(Boolean).map(b=><option key={b} value={b}>{b} ({inv.filter(i=>i.batchId===b).length})</option>)}</select>
+          <div style={{position:"relative",flex:1,minWidth:120}}><input style={{...bI,paddingLeft:38,fontSize:12}} placeholder={LL.searchIMEI} value={gsSearch} onChange={e=>setGsSearch(e.target.value)}/><div style={{position:"absolute",left:7,top:"50%",transform:"translateY(-50%)",color:T.dim}}>{Ic.srch}</div></div>
+          <button onClick={()=>{setGsBulkMode(true);setGsBulkQ("");}} style={{...gB,padding:"6px 10px",fontSize:11}}>{LL.bulkSearch}</button>
+        </>:<>
+          <textarea style={{...bI,minHeight:55,fontSize:12,fontFamily:"monospace",flex:1}} placeholder={LL.bulkHint} value={gsBulkQ} onChange={e=>setGsBulkQ(e.target.value)}/>
+          <button onClick={()=>{setGsBulkMode(false);setGsBulkQ("");}} style={{...gB,padding:"6px 10px",fontSize:11}}>{Ic.x}</button>
+        </>}
+      </div>
+      {(()=>{let lcdItems=[];
+        if(gsBulkMode&&gsBulkQ.trim()){const terms=gsBulkQ.split("\n").map(s=>s.trim().toUpperCase()).filter(Boolean);lcdItems=inv.filter(i=>terms.some(t=>(i.imei&&i.imei.includes(t))||(i.serial&&i.serial.toUpperCase().includes(t))||(i.codeId&&i.codeId.toUpperCase().includes(t))));}
+        else if(gsSearch.trim()){const q=gsSearch.trim().toLowerCase();lcdItems=inv.filter(i=>(i.imei&&i.imei.includes(gsSearch))||(i.serial&&i.serial.toLowerCase().includes(q))||(i.codeId&&i.codeId.toLowerCase().includes(q))||(i.product&&i.product.toLowerCase().includes(q)));}
+        else if(gsBatch){lcdItems=inv.filter(i=>i.batchId===gsBatch);}
+        else return null;
+        const lcdFiltered=lcdItems.filter(i=>i.glassStatus!=="serviced");
+        if(lcdFiltered.length===0)return <div style={{textAlign:"center",padding:20,color:T.dim,background:T.card,borderRadius:10,border:"1px solid "+T.border,fontSize:12}}>{LL.noResults}</div>;
+        return <div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,padding:12}}>
+    <div style={{display:"flex",gap:4,marginBottom:8,flexWrap:"wrap",alignItems:"center"}}><button onClick={()=>{const m={...gsLcdChecked};lcdFiltered.forEach(i=>m[i._dbId]=true);setGsLcdChecked(m);}} style={{...gB,fontSize:10,padding:"4px 8px"}}>{LL.selectAll}</button><button onClick={()=>setGsLcdChecked({})} style={{...gB,fontSize:10,padding:"4px 8px"}}>{LL.clearAll}</button><span style={{color:T.muted,fontSize:11}}>{Object.values(gsLcdChecked).filter(Boolean).length} {LL.selected}</span></div>
+    <div style={{display:"grid",gap:4}}>{lcdFiltered.map(it=>{const sel=!!gsLcdChecked[it._dbId];const unitTags=it.lcdFaults||[];return <div key={it._dbId} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"8px 10px",background:sel?"rgba(239,68,68,0.06)":"transparent",borderRadius:6,border:`1px solid ${sel?T.danger:T.border}`,flexWrap:"wrap"}}>
+      <div onClick={()=>setGsLcdChecked(p=>({...p,[it._dbId]:!p[it._dbId]}))} style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",flex:1,minWidth:150}}>
+        <input type="checkbox" checked={sel} readOnly style={{width:16,height:16}}/>
+        <span style={{color:T.warning,fontWeight:700,fontSize:13,minWidth:50}}>{it.grade||"—"}</span>
+        <span style={{color:T.text,fontSize:12}}>{it.product}{it.size?` · ${it.size}`:""}{it.color?` · ${it.color}`:""}</span>
+        {it.imei&&<div style={{fontSize:13,color:T.accent,fontFamily:"monospace",fontWeight:600}}>{it.imei}</div>}
+      </div>
+      <div style={{display:"flex",gap:3,flexWrap:"wrap",alignItems:"center",width:"100%",marginTop:4}}>
+        <select onChange={async e=>{const o=e.target.value;if(!o)return;e.target.value="";const cur=it.lcdFaults||[];if(cur.some(x=>x===o))return;const next=[...cur,o];await db.updateInvStatus(it._dbId,{lcdFaults:next,lcdFault:next[0]||""});}} onClick={e=>e.stopPropagation()} style={{...bI,width:"auto",fontSize:11,padding:"4px 6px",color:T.danger}} defaultValue=""><option value="">{"🔴 + LCD Issue"}</option>{(lcdOpts.length?lcdOpts:["LCD Crack","Dead Pixel","Touch Fault","Backlight Issue"]).filter(o=>!unitTags.includes(o)).map(o=><option key={o} value={o}>{o}</option>)}</select>
+        {unitTags.map(o=><span key={o} style={{display:"inline-flex",alignItems:"center",gap:3,padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:"rgba(239,68,68,0.15)",color:T.danger}}>{o}<span style={{fontSize:8,color:T.dim}}>-{tech.name}</span><button onClick={async(e)=>{e.stopPropagation();const next=unitTags.filter(x=>x!==o);await db.updateInvStatus(it._dbId,{lcdFaults:next,lcdFault:next[0]||""});}} style={{background:"rgba(239,68,68,0.15)",border:"none",color:T.danger,cursor:"pointer",fontSize:16,padding:"2px 6px",borderRadius:4,marginLeft:2,lineHeight:1}}>×</button></span>)}
+        {unitTags.length===0&&<span style={{fontSize:10,color:T.success,fontWeight:600}}>No issues tagged</span>}
+      </div>
+    </div>;})}</div>
+    {Object.values(gsLcdChecked).filter(Boolean).length>0&&<div style={{marginTop:10}}><button onClick={handleLcdMarkServiced} disabled={!Object.values(gsLcdChecked).filter(Boolean).some(v=>v)} style={{...bB,width:"100%",justifyContent:"center",padding:"12px 16px",fontSize:14,borderRadius:9,background:T.danger,color:"#fff",opacity:Object.values(gsLcdChecked).filter(Boolean).length?1:0.4}}>{Ic.chk} {LL.markServiced} — LCD Issue ({Object.values(gsLcdChecked).filter(Boolean).length})</button></div>}
+    </div>;})()}
+    </div>}
+    {inv.length===0&&<div style={{textAlign:"center",padding:28,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`,fontSize:12}}>{LL.noInvItems}</div>}</div>}
+
+    {tab==="camera"&&<div><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{LL.cameraService}</h3>
+      <div style={{display:"flex",gap:5,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
+        {!csBulkMode?<>
+          <select value={csBatch} onChange={e=>{setCsBatch(e.target.value);setCsChecked({});setCsWashChecked({});setCsFix({});setCsSearch("");}} style={{...bI,width:"auto",fontSize:12,padding:"8px 10px"}}><option value="">{LL.selectBatch}...</option>{[...new Set(inv.map(i=>i.batchId))].filter(Boolean).map(b=><option key={b} value={b}>{b} ({inv.filter(i=>i.batchId===b).length})</option>)}</select>
+          <div style={{position:"relative",flex:1,minWidth:120}}><input style={{...bI,paddingLeft:38,fontSize:12}} placeholder={LL.searchIMEI} value={csSearch} onChange={e=>setCsSearch(e.target.value)}/><div style={{position:"absolute",left:7,top:"50%",transform:"translateY(-50%)",color:T.dim}}>{Ic.srch}</div></div>
+          <button onClick={()=>{setCsBulkMode(true);setCsBulkQ("");}} style={{...gB,padding:"6px 10px",fontSize:11}}>{LL.bulkSearch}</button>
+        </>:<>
+          <textarea style={{...bI,minHeight:55,fontSize:12,fontFamily:"monospace",flex:1}} placeholder={LL.bulkHint} value={csBulkQ} onChange={e=>setCsBulkQ(e.target.value)}/>
+          <button onClick={()=>{setCsBulkMode(false);setCsBulkQ("");}} style={{...gB,padding:"6px 10px",fontSize:11}}>{Ic.x}</button>
+        </>}
+      </div>
+      {(()=>{let csItems=[];
+        if(csBulkMode&&csBulkQ.trim()){const terms=csBulkQ.split("\n").map(s=>s.trim().toUpperCase()).filter(Boolean);csItems=inv.filter(i=>terms.some(t=>(i.imei&&i.imei.includes(t))||(i.serial&&i.serial.toUpperCase().includes(t))||(i.codeId&&i.codeId.toUpperCase().includes(t))));}
+        else if(csSearch.trim()){const q=csSearch.trim().toLowerCase();csItems=inv.filter(i=>(i.imei&&i.imei.includes(csSearch))||(i.serial&&i.serial.toLowerCase().includes(q))||(i.codeId&&i.codeId.toLowerCase().includes(q))||(i.product&&i.product.toLowerCase().includes(q)));}
+        else if(csBatch){csItems=inv.filter(i=>i.batchId===csBatch);}
+        else return null;
+        if(csItems.length===0)return <div style={{textAlign:"center",padding:20,color:T.dim,background:T.card,borderRadius:10,border:"1px solid "+T.border,fontSize:12}}>{LL.noResults}</div>;
+        const csItemsSorted=svcFilterItems(csItems,csFilter,"cameraStatus","camera");
+        const csWashItems=csItemsSorted.filter(i=>i.cameraStatus!=="washing"&&i.cameraStatus!=="serviced");
+        const csWashedItems=csItemsSorted.filter(i=>i.cameraStatus==="washing");
+        const csDoneItems=csItemsSorted.filter(i=>i.cameraStatus==="serviced");
+        return <>{svcFilterBar(csFilter,setCsFilter)}<div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,padding:12,marginBottom:10}}><h4 style={{color:T.purple,fontSize:13,fontWeight:700,margin:"0 0 8px"}}>{LL.washingTitle}</h4><div style={{display:"flex",gap:4,marginBottom:6}}><button onClick={()=>{const m={};csWashItems.forEach(i=>m[i._dbId]=true);setCsWashChecked(m);}} style={{...gB,fontSize:10,padding:"4px 8px"}}>{LL.selectAll}</button><button onClick={()=>setCsWashChecked({})} style={{...gB,fontSize:10,padding:"4px 8px"}}>{LL.clearAll}</button><span style={{color:T.success,fontSize:10,marginLeft:"auto"}}>{csDoneItems.length} done</span></div><div style={{display:"grid",gap:3}}>{csWashItems.map(it=><div key={it._dbId} onClick={()=>setCsWashChecked(p=>({...p,[it._dbId]:!p[it._dbId]}))} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",background:csWashChecked[it._dbId]?"rgba(139,92,246,0.08)":"transparent",borderRadius:5,border:`1px solid ${csWashChecked[it._dbId]?T.purple:T.border}`,cursor:"pointer"}}><input type="checkbox" checked={!!csWashChecked[it._dbId]} readOnly style={{width:14,height:14}}/><span style={{color:T.warning,fontWeight:700,fontSize:12}}>{it.grade||"—"}</span>{(()=>{const oi=(orderItems||[]).find(x=>x.inventory_id===it._dbId);if(!oi)return null;const ord=(buyerOrders||[]).find(x=>x.id===oi.order_id);if(!ord||ord.priority==="normal")return null;return <span style={{padding:"1px 4px",borderRadius:3,fontSize:8,fontWeight:700,background:ord.priority==="urgent"?"rgba(239,68,68,0.15)":"rgba(245,158,11,0.15)",color:ord.priority==="urgent"?T.danger:T.warning}}>{ord.priority.toUpperCase()}</span>;})()}<span style={{color:T.text,fontSize:11}}>{it.product}{it.color?` · ${it.color}`:""}</span>{it.imei&&<div style={{fontSize:13,color:T.accent,fontFamily:"monospace",fontWeight:600}}>{it.imei}</div>}{it.conditionRemark&&<span style={{fontSize:9,color:T.warning,padding:"1px 4px",background:"rgba(217,119,6,0.08)",borderRadius:3}}>⚠ {it.conditionRemark}</span>}{it.redoHistory&&it.redoHistory.filter(r=>r.type==="camera").length>0&&it.cameraStatus!=="serviced"&&<span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:700,background:T.danger,color:"#fff"}}>REDO{it.redoHistory.filter(r=>r.type==="camera").length>1?" x"+it.redoHistory.filter(r=>r.type==="camera").length:""}</span>}</div>)}</div>{Object.values(csWashChecked).filter(Boolean).length>0&&<div style={{display:"flex",gap:6,marginTop:8}}><button onClick={handleCamWash} style={{...bB,flex:1,justifyContent:"center",padding:"10px",fontSize:13,background:T.purple,color:"#fff",borderRadius:8}}>{LL.wash} ({Object.values(csWashChecked).filter(Boolean).length})</button><button onClick={()=>{const ids=Object.keys(csWashChecked).filter(k=>csWashChecked[k]);if(!ids.length)return;const now=new Date().toISOString();db.bulkUpdateInvStatus(ids.map(dbId=>({dbId:parseInt(dbId),cameraStatus:"washing",stepLog:[{type:"camera_skip_wash",techId:tech.id,techName:tech.name,at:now}]})));setCsWashChecked({});}} style={{...bB,flex:1,justifyContent:"center",padding:"10px",fontSize:13,background:T.accent,color:"#fff",borderRadius:8}}>{LL.skipInspect} ({Object.values(csWashChecked).filter(Boolean).length})</button><button onClick={async()=>{const ids=Object.keys(csWashChecked).filter(k=>csWashChecked[k]);if(!ids.length)return;const now=new Date().toISOString();await db.bulkUpdateInvStatus(ids.map(dbId=>({dbId:parseInt(dbId),cameraStatus:"serviced",stepLog:[{type:"camera_ok",techId:tech.id,techName:tech.name,at:now}]})));setCsWashChecked({});}} style={{...bB,flex:1,justifyContent:"center",padding:"10px",fontSize:13,background:T.success,color:"#fff",borderRadius:8}}>{LL.markOK} ({Object.values(csWashChecked).filter(Boolean).length})</button></div>}</div>
+
+    <div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,padding:12}}><h4 style={{color:T.accent,fontSize:13,fontWeight:700,margin:"0 0 8px"}}>{LL.inspect}</h4>{(()=>{const washed=csWashedItems;return washed.length===0?<div style={{color:T.dim,fontSize:11,padding:10}}>{LL.noWaitInspect}</div>:<><div style={{display:"flex",gap:4,marginBottom:8}}><button onClick={()=>{const m={};washed.forEach(i=>m[i._dbId]=true);setCsChecked(m);}} style={{...gB,fontSize:10,padding:"4px 8px"}}>{LL.allOK} — {LL.selectAll}</button><button onClick={()=>setCsChecked({})} style={{...gB,fontSize:10,padding:"4px 8px"}}>{LL.clearAll}</button></div><div style={{display:"grid",gap:6}}>{washed.map(it=>{const lenses=CM[it.product]||["Wide 1.0x","Front"];const hasFix=csFix[it._dbId]&&Object.values(csFix[it._dbId]).some(v=>v&&v!=="OK");return <div key={it._dbId} style={{padding:"8px 10px",borderRadius:6,border:`1px solid ${hasFix?T.warning:csChecked[it._dbId]?T.accent:T.border}`,background:hasFix?"rgba(245,158,11,0.04)":csChecked[it._dbId]?"rgba(201,168,76,0.04)":"transparent"}}><div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}><input type="checkbox" checked={!!csChecked[it._dbId]} onChange={()=>setCsChecked(p=>({...p,[it._dbId]:!p[it._dbId]}))} style={{width:14,height:14}}/><span style={{color:T.warning,fontWeight:700,fontSize:12}}>{it.grade||"—"}</span><span style={{color:T.text,fontSize:11}}>{it.product}{it.color?` · ${it.color}`:""}</span>{it.imei&&<div style={{fontSize:13,color:T.accent,fontFamily:"monospace",fontWeight:600}}>{it.imei}</div>}{it.conditionRemark&&<span style={{fontSize:9,color:T.warning,padding:"1px 4px",background:"rgba(217,119,6,0.08)",borderRadius:3}}>⚠ {it.conditionRemark}</span>}{it.redoHistory&&it.redoHistory.filter(r=>r.type==="camera").length>0&&<span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:700,background:"rgba(239,68,68,0.15)",color:T.danger}}>REDO{it.redoHistory.filter(r=>r.type==="camera").length>1?" x"+it.redoHistory.filter(r=>r.type==="camera").length:""}</span>}{(()=>{const wasWashed=it.stepLog&&it.stepLog.some(s=>s.type==="camera_wash");return <span style={{padding:"1px 5px",borderRadius:3,fontSize:9,background:wasWashed?COMP_COLORS.washing:"rgba(201,168,76,0.8)",color:"#fff"}}>{wasWashed?LL.washed:LL.readyLabel}</span>;})()}</div><div style={{display:"grid",gap:3,marginLeft:22}}>{lenses.map(lens=>{const lensTags=(csFix[it._dbId]||{})[lens]||[];const lensTagsArr=Array.isArray(lensTags)?lensTags:lensTags&&lensTags!=="OK"?[{fix:lensTags,techId:tech.id,techName:tech.name}]:[];return <div key={lens} style={{display:"flex",alignItems:"flex-start",gap:6,fontSize:11,flexWrap:"wrap"}}><span style={{color:T.muted,minWidth:80,paddingTop:4}}>{lens}:</span><div style={{display:"flex",gap:3,flexWrap:"wrap",alignItems:"center",flex:1}}><select onChange={e=>{const v=e.target.value;if(!v)return;e.target.value="";const cur=lensTagsArr;if(cur.some(t=>t.fix===v))return;const next=[...cur,{fix:v,techId:tech.id,techName:tech.name}];setCsFix(p=>({...p,[it._dbId]:{...(p[it._dbId]||{}),[lens]:next}}));setCsChecked(p=>({...p,[it._dbId]:true}));}} style={{padding:"3px 6px",fontSize:11,borderRadius:4,border:`1px solid ${T.border}`,background:T.inputBg,color:T.muted}} defaultValue=""><option value="">{lensTagsArr.length===0?"OK":"+ Fix"}</option>{camFixOpts.filter(f=>f!=="OK"&&!lensTagsArr.some(t=>t.fix===f)).map(f=><option key={f} value={f}>{f}</option>)}</select>{lensTagsArr.map((t,ti)=><span key={ti} style={{display:"inline-flex",alignItems:"center",gap:2,padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(245,158,11,0.15)",color:T.warning}}>{t.fix}<span style={{fontSize:8,color:T.dim}}>-{t.techName}</span>{t.techId===tech.id&&<button onClick={()=>{const next=lensTagsArr.filter((_,i)=>i!==ti);setCsFix(p=>({...p,[it._dbId]:{...(p[it._dbId]||{}),[lens]:next.length?next:[]}}));}} style={{background:"rgba(239,68,68,0.15)",border:"none",color:T.danger,cursor:"pointer",fontSize:14,padding:"1px 4px",borderRadius:3,marginLeft:1,lineHeight:1}}>×</button>}</span>)}{lensTagsArr.length===0&&<span style={{fontSize:10,color:T.success}}>✅</span>}</div></div>;})}</div></div>;})}</div><div style={{display:"flex",gap:6,marginTop:10}}><button onClick={handleCamSubmit} disabled={!Object.values(csChecked).filter(Boolean).length} style={{...pB,flex:1,justifyContent:"center",padding:"12px 16px",fontSize:14,borderRadius:9,opacity:Object.values(csChecked).filter(Boolean).length?1:0.4}}>{Ic.chk} {LL.markServiced} ({Object.values(csChecked).filter(Boolean).length})</button></div></>})()}</div>
+    {csDoneItems.length>0&&<div style={{background:T.card,borderRadius:10,border:`1px solid ${T.border}`,padding:12,marginTop:10}}><h4 style={{color:T.success,fontSize:13,fontWeight:700,margin:"0 0 8px"}}>{LL.svcPartsReport}</h4><div style={{display:"grid",gap:4}}>{csDoneItems.map(it=><div key={it._dbId} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderRadius:5,border:`1px solid ${T.border}`,flexWrap:"wrap"}}><span style={{color:T.warning,fontWeight:700,fontSize:12,minWidth:50}}>{it.grade||"—"}</span><span style={{color:T.text,fontSize:11,flex:1,minWidth:100}}>{it.product}{it.color?` · ${it.color}`:""}</span><select style={{...bI,width:"auto",fontSize:11,padding:"3px 6px",border:`1px solid ${it.camPartsNote?T.purple:T.border}`,color:it.camPartsNote?T.purple:T.text}} value={it.camPartsNote||""} onChange={e=>handleCamPartsReport(it,e.target.value)}><option value="">{LL.original}</option>{camPartsOpts.map(o=><option key={o} value={o}>{o}</option>)}{!camPartsOpts.length&&<><option value="Genuine (new)">Genuine (new)</option><option value="Used part">Used part</option></>}</select>
+      {PARTS_ENABLED&&(()=>{const cParts=(partsInv||[]).filter(p=>p.category==="Camera"&&matchPartModel(p.model,it.product)&&p.qty>0&&!(it.partsUsed||[]).some(pu=>pu.id===p.id));const usedC=(it.partsUsed||[]).filter(pu=>pu.category==="Camera");return(cParts.length>0||usedC.length>0);})()&&<div style={{display:"flex",gap:3,alignItems:"center",flexWrap:"wrap"}}>
+        <select onChange={async e=>{const pid=parseInt(e.target.value);if(!pid)return;e.target.value="";const part=(partsInv||[]).find(p=>p.id===pid);if(!part)return;if(part.qty<=0){alert(LL.outOfStock||"Out of stock!");return;}const cur=it.partsUsed||[];if(cur.some(pu=>pu.id===pid))return;const next=[...cur,{id:pid,name:part.name,category:part.category,usedAt:new Date().toISOString()}];await db.updateInvStatus(it._dbId,{partsUsed:next});await db.usePart(pid,1);}} onClick={e=>e.stopPropagation()} style={{...bI,width:"auto",fontSize:11,padding:"3px 6px",color:T.accent}} defaultValue=""><option value="">{"🔩 + "+(LL.cameraParts||"Camera Parts")}</option>{(partsInv||[]).filter(p=>p.category==="Camera"&&matchPartModel(p.model,it.product)&&p.qty>0&&!(it.partsUsed||[]).some(pu=>pu.id===p.id)).map(p=><option key={p.id} value={p.id}>{p.name} [{p.qty}]</option>)}</select>
+        {(it.partsUsed||[]).filter(pu=>pu.category==="Camera").map(pu=><span key={pu.id} style={{display:"inline-flex",alignItems:"center",gap:2,padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(201,168,76,0.15)",color:T.accent}}>{pu.name}<button onClick={async(e)=>{e.stopPropagation();const next=(it.partsUsed||[]).filter(x=>x.id!==pu.id);await db.updateInvStatus(it._dbId,{partsUsed:next});await db.restockPart(pu.id,1);}} style={{background:"rgba(239,68,68,0.15)",border:"none",color:T.danger,cursor:"pointer",fontSize:14,padding:"1px 4px",borderRadius:3,marginLeft:1,lineHeight:1}}>×</button></span>)}
+      </div>}
+      {(()=>{const rc=(it.stepLog||[]).filter(l=>l.type==="camera_reserviced"||l.type==="admin_reopen_camera").length;return rc>0?<span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:700,background:"rgba(59,130,246,0.15)",color:"#3b82f6"}}>Reopened x{rc}</span>:null;})()}
+      {(()=>{const hasQcJob=jobs.some(j=>j.status==="qc-pending"&&j.component==="full"&&!j.deleted&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())));return hasQcJob?<span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:600,background:"rgba(16,185,129,0.1)",color:T.success,whiteSpace:"nowrap"}}>✅ QC</span>:<button onClick={async(e)=>{e.stopPropagation();if(!confirm(LL.confirmQC||"Confirm send to QC Pending?"))return;await db.createJob({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:[],remark:"Sent to QC by "+tech.name,qty:1,status:"qc-pending",mode:"repair",component:"full",qcBy:""});}} style={{...bB,padding:"2px 8px",fontSize:10,background:T.success,color:"#fff",borderRadius:4,whiteSpace:"nowrap"}}>📋 QC</button>;})()}
+      </div>)}</div></div>}
+    </>;})()}{inv.length===0&&<div style={{textAlign:"center",padding:28,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`,fontSize:12}}>{LL.noInvItems}</div>}</div>}
+
+    {tab==="housing"&&<div><h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{LL.housingService}{housingSJ?" - "+sjN(housingSJ,lang):""}</h3>
+      <div style={{display:"flex",gap:5,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
+        {!hsBulkMode?<>
+          <select value={hsBatch} onChange={e=>{setHsBatch(e.target.value);setHsSearch("");}} style={{...bI,width:"auto",fontSize:12,padding:"8px 10px"}}><option value="">{LL.selectBatch}...</option>{[...new Set(inv.map(i=>i.batchId))].filter(Boolean).map(b=><option key={b} value={b}>{b} ({inv.filter(i=>i.batchId===b).length})</option>)}</select>
+          <div style={{position:"relative",flex:1,minWidth:120}}><input style={{...bI,paddingLeft:38,fontSize:12}} placeholder={LL.searchIMEI} value={hsSearch} onChange={e=>setHsSearch(e.target.value)}/><div style={{position:"absolute",left:7,top:"50%",transform:"translateY(-50%)",color:T.dim}}>{Ic.srch}</div></div>
+          <button onClick={()=>{setHsBulkMode(true);setHsBulkQ("");}} style={{...gB,padding:"6px 10px",fontSize:11}}>{LL.bulkSearch}</button>
+        </>:<>
+          <textarea style={{...bI,minHeight:55,fontSize:12,fontFamily:"monospace",flex:1}} placeholder={LL.bulkHint} value={hsBulkQ} onChange={e=>setHsBulkQ(e.target.value)}/>
+          <button onClick={()=>{setHsBulkMode(false);setHsBulkQ("");}} style={{...gB,padding:"6px 10px",fontSize:11}}>{Ic.x}</button>
+        </>}
+      </div>
+      {(()=>{let hsItems=[];
+        if(hsBulkMode&&hsBulkQ.trim()){const terms=hsBulkQ.split("\n").map(s=>s.trim().toUpperCase()).filter(Boolean);hsItems=inv.filter(i=>terms.some(t=>(i.imei&&i.imei.includes(t))||(i.serial&&i.serial.toUpperCase().includes(t))||(i.codeId&&i.codeId.toUpperCase().includes(t))));}
+        else if(hsSearch.trim()){const q=hsSearch.trim().toLowerCase();hsItems=inv.filter(i=>(i.imei&&i.imei.includes(hsSearch))||(i.serial&&i.serial.toLowerCase().includes(q))||(i.codeId&&i.codeId.toLowerCase().includes(q))||(i.product&&i.product.toLowerCase().includes(q)));}
+        else if(hsBatch){hsItems=inv.filter(i=>i.batchId===hsBatch);}
+        else return null;
+        const doneCount=hsItems.filter(i=>i.housingStatus==="serviced").length;const partialCount=hsItems.filter(i=>i.housingStatus==="partial").length;
+        const hsFiltered=svcFilterItems(hsItems,hsFilter,"housingStatus","housing");
+        return hsItems.length===0?<div style={{textAlign:"center",padding:20,color:T.dim,background:T.card,borderRadius:10,border:"1px solid "+T.border,fontSize:12}}>{LL.noResults}</div>
+        :<div style={{background:T.card,borderRadius:10,border:"1px solid "+T.border,padding:12}}>
+          {svcFilterBar(hsFilter,setHsFilter)}
+          <div style={{display:"flex",gap:8,marginBottom:8,fontSize:10,color:T.muted}}><span>{hsFiltered.length}/{hsItems.length} units</span><span style={{color:T.success}}>{doneCount} done</span><span style={{color:T.warning}}>{partialCount} partial</span></div>
+          {housingOpts.length===0&&<div style={{padding:8,marginBottom:8,color:T.warning,fontSize:11,background:"rgba(245,158,11,0.06)",borderRadius:5}}>{LL.housingInstr}</div>}
+          <div style={{display:"grid",gap:5}}>{hsFiltered.map(it=>{const done=it.housingStatus==="serviced";const partial=it.housingStatus==="partial";const steps=it.housingSteps||[];const canEdit=true;
+            return <div key={it._dbId} style={{padding:"8px 10px",borderRadius:6,border:"1px solid "+(done?T.success:partial?T.warning:T.border),background:done?"rgba(16,185,129,0.06)":partial?"rgba(245,158,11,0.06)":"transparent"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:housingOpts.length>0&&!done?6:0}}>
+                {it.grade&&<span style={{color:T.warning,fontWeight:700,fontSize:12,padding:"1px 6px",borderRadius:4,background:"rgba(201,168,76,0.12)"}}>{it.grade}</span>}
+                {(()=>{const oi=(orderItems||[]).find(x=>x.inventory_id===it._dbId);if(!oi)return null;const ord=(buyerOrders||[]).find(x=>x.id===oi.order_id);if(!ord||ord.priority==="normal")return null;return <span style={{padding:"1px 4px",borderRadius:3,fontSize:8,fontWeight:700,background:ord.priority==="urgent"?"rgba(239,68,68,0.15)":"rgba(245,158,11,0.15)",color:ord.priority==="urgent"?T.danger:T.warning}}>{ord.priority.toUpperCase()}</span>;})()}
+                <span style={{color:T.text,fontSize:12,flex:1}}>{it.product}{it.size?" "+it.size:""}{it.color?" "+it.color:""}{it.newColor&&it.newColor!==it.color&&<span style={{marginLeft:3,padding:"1px 4px",borderRadius:3,fontSize:9,fontWeight:700,background:"rgba(139,92,246,0.15)",color:T.purple}}>→{it.newColor}</span>}{it.conditionRemark&&<span style={{marginLeft:3,fontSize:9,color:T.warning,padding:"1px 4px",background:"rgba(217,119,6,0.08)",borderRadius:3}}>⚠ {it.conditionRemark}</span>}</span>
+                {it.imei&&<span style={{color:T.accent,fontSize:9,fontFamily:"monospace"}}>{it.imei}</span>}
+                <span style={{color:T.dim,fontSize:10,fontFamily:"monospace"}}>{it.batchId}</span>
+                {done&&<span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:600,background:T.success,color:"#fff"}}>{LL.allDone}</span>}
+                {partial&&<span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:600,background:T.warning,color:"#fff"}}>{steps.length}/{housingOpts.length}</span>}
+                {it.redoHistory&&it.redoHistory.filter(r=>r.type==="housing").length>0&&it.housingStatus!=="serviced"&&<span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:700,background:T.danger,color:"#fff"}}>REDO{it.redoHistory.filter(r=>r.type==="housing").length>1?" x"+it.redoHistory.filter(r=>r.type==="housing").length:""}</span>}
+                {(()=>{const rc=(it.stepLog||[]).filter(l=>l.type==="housing_reserviced"||l.type==="admin_reopen_housing").length;return rc>0?<span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:700,background:"rgba(59,130,246,0.15)",color:"#3b82f6"}}>Reopened x{rc}</span>:null;})()}
+              </div>
+              {(()=>{const isReopened=(it.stepLog||[]).some(l=>l.type==="admin_reopen_housing"||l.type==="housing_reserviced");return isReopened&&!done?<div style={{marginLeft:58,marginTop:4,marginBottom:4,display:"flex",gap:4,alignItems:"center"}}><span style={{fontSize:10,color:T.accent}}>📅 {lang==="cn"?"选择日期时间":"Date/Time"}:</span><input type="datetime-local" value={reopenDateMap[it._dbId]||""} onChange={e=>setReopenDateMap(p=>({...p,[it._dbId]:e.target.value}))} style={{...bI,width:"auto",fontSize:11,padding:"3px 6px"}}/></div>:null;})()}
+              {!done&&housingOpts.length>0&&<div style={{display:"flex",gap:5,flexWrap:"wrap",marginLeft:58}}>
+                {housingOpts.map((o,oi)=>{const checked=steps.includes(o);const isClosing=oi===housingOpts.length-1;const isNotFirst=oi>0;const anyOtherDone=housingOpts.filter((_,i)=>i!==oi).some(x=>steps.includes(x));const blocked=isClosing&&!anyOtherDone;const needConfirm=(isClosing||isNotFirst)&&!checked;return <label key={o} style={{display:"flex",alignItems:"center",gap:4,cursor:blocked?"not-allowed":"pointer",padding:"4px 8px",borderRadius:5,background:checked?"rgba(16,185,129,0.15)":blocked?"rgba(100,116,139,0.05)":"transparent",border:"1px solid "+(checked?T.success:blocked?"rgba(100,116,139,0.2)":T.border),opacity:blocked?0.4:1}} onClick={e=>e.stopPropagation()}>
+                  <input type="checkbox" checked={checked} disabled={blocked} onChange={()=>{if(blocked)return;if(needConfirm)setHsConfirm({it,step:o});else handleHousingStep(it,o);}} style={{width:14,height:14,accentColor:T.success}}/>
+                  <span style={{fontSize:12,color:checked?T.success:blocked?T.dim:T.muted}}>{o}{isClosing&&!anyOtherDone?" "+LL.completeOtherSteps:""}</span>
+                </label>;})}
+              </div>}
+              {/* HS Servicing */}
+              {hsSvcOpts.length>0&&(it.hsServicing||[]).length+(canEdit?1:0)>0&&<div style={{marginLeft:58,marginTop:6}}>
+                <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
+                  {canEdit&&<select onChange={async e=>{const o=e.target.value;if(!o)return;e.target.value="";const cur=it.hsServicing||[];const names=cur.map(x=>typeof x==="object"?x.name:x);if(names.includes(o))return;const next=[...cur,{name:o,techId:tech.id,techName:tech.name}];await db.updateInvStatus(it._dbId,{hsServicing:next});const existJ=jobs.find(j=>j.component==="housing"&&j.remark==="HS Svc: "+o&&!j.deleted&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())));if(!existJ)await db.createJob({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:hsSvcSJ?[{name:hsSvcSJ.name,option:o}]:[],remark:"HS Svc: "+o,qty:1,status:"completed",dateDone:new Date().toISOString(),mode:"service",component:"housing"});}} onClick={e=>e.stopPropagation()} style={{...bI,width:"auto",fontSize:11,padding:"4px 6px",color:T.purple}} defaultValue=""><option value="">{"🔧 + "+LL.hsSvc}</option>{hsSvcOpts.filter(o=>!(it.hsServicing||[]).map(x=>typeof x==="object"?x.name:x).includes(o)).map(o=><option key={o} value={o}>{o}</option>)}</select>}
+                  {(it.hsServicing||[]).map((o,oi)=>{const tag=typeof o==="object"?o:{name:o,techId:null,techName:""};const isOwn=tag.techId===tech.id;return <span key={oi} style={{display:"inline-flex",alignItems:"center",gap:2,padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:"rgba(139,92,246,0.15)",color:T.purple}}>{tag.name}{tag.techName&&<span style={{fontSize:8,color:T.dim}}>-{tag.techName}</span>}{canEdit&&isOwn&&<button onClick={async(e)=>{e.stopPropagation();const next=(it.hsServicing||[]).filter((_,i)=>i!==oi);await db.updateInvStatus(it._dbId,{hsServicing:next});const existJ=jobs.find(j=>j.component==="housing"&&j.remark==="HS Svc: "+tag.name&&!j.deleted&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())));if(existJ)await db.deleteJob(existJ.id);}} style={{background:"rgba(239,68,68,0.15)",border:"none",color:T.danger,cursor:"pointer",fontSize:16,padding:"2px 6px",borderRadius:4,marginLeft:2,lineHeight:1}}>×</button>}{canEdit&&!isOwn&&tag.techId&&<span style={{fontSize:8,color:T.dim,marginLeft:2}}>🔒</span>}</span>;})}
+                </div>
+                {canEdit&&(it.hsServicing||[]).length>0&&<input style={{...bI,fontSize:11,padding:"4px 6px",marginTop:4,border:`1px solid ${it.hsServicingRemark?T.purple:T.border}`}} placeholder={LL.hsRemark} defaultValue={it.hsServicingRemark||""} onBlur={e=>db.updateInvStatus(it._dbId,{hsServicingRemark:e.target.value})} onClick={e=>e.stopPropagation()}/>}
+              </div>}
+              {/* Tech QC */}
+              {techQcOpts.length>0&&(it.techQc||[]).length+(canEdit?1:0)>0&&<div style={{marginLeft:58,marginTop:6}}>
+                <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
+                  {canEdit&&<select onChange={async e=>{const o=e.target.value;if(!o)return;e.target.value="";const cur=it.techQc||[];const names=cur.map(x=>typeof x==="object"?x.name:x);if(names.includes(o))return;const next=[...cur,{name:o,techId:tech.id,techName:tech.name}];await db.updateInvStatus(it._dbId,{techQc:next});const existJ=jobs.find(j=>j.component==="housing"&&j.remark==="Tech QC: "+o&&!j.deleted&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())));if(!existJ)await db.createJob({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:techQcSJ?[{name:techQcSJ.name,option:o}]:[],remark:"Tech QC: "+o,qty:1,status:"completed",dateDone:new Date().toISOString(),mode:"service",component:"housing"});}} onClick={e=>e.stopPropagation()} style={{...bI,width:"auto",fontSize:11,padding:"4px 6px",color:T.qcO}} defaultValue=""><option value="">{"🔍 + "+LL.techQcLabel}</option>{techQcOpts.filter(o=>!(it.techQc||[]).map(x=>typeof x==="object"?x.name:x).includes(o)).map(o=><option key={o} value={o}>{o}</option>)}</select>}
+                  {(it.techQc||[]).map((o,oi)=>{const tag=typeof o==="object"?o:{name:o,techId:null,techName:""};const isOwn=tag.techId===tech.id;return <span key={oi} style={{display:"inline-flex",alignItems:"center",gap:2,padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:"rgba(249,115,22,0.15)",color:T.qcO}}>{tag.name}{tag.techName&&<span style={{fontSize:8,color:T.dim}}>-{tag.techName}</span>}{canEdit&&isOwn&&<button onClick={async(e)=>{e.stopPropagation();const next=(it.techQc||[]).filter((_,i)=>i!==oi);await db.updateInvStatus(it._dbId,{techQc:next});const existJ=jobs.find(j=>j.component==="housing"&&j.remark==="Tech QC: "+tag.name&&!j.deleted&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())));if(existJ)await db.deleteJob(existJ.id);}} style={{background:"rgba(239,68,68,0.15)",border:"none",color:T.danger,cursor:"pointer",fontSize:16,padding:"2px 6px",borderRadius:4,marginLeft:2,lineHeight:1}}>×</button>}{canEdit&&!isOwn&&tag.techId&&<span style={{fontSize:8,color:T.dim,marginLeft:2}}>🔒</span>}</span>;})}
+                </div>
+                {canEdit&&(it.techQc||[]).length>0&&<input style={{...bI,fontSize:11,padding:"4px 6px",marginTop:4,border:`1px solid ${it.techQcRemark?T.qcO:T.border}`}} placeholder={LL.techQcRemark} defaultValue={it.techQcRemark||""} onBlur={e=>db.updateInvStatus(it._dbId,{techQcRemark:e.target.value})} onClick={e=>e.stopPropagation()}/>}
+              </div>}
+              {/* HS Parts Replacement */}
+              {hsPartsOpts.length>0&&(it.hsParts||[]).length+(canEdit?1:0)>0&&<div style={{marginLeft:58,marginTop:6}}>
+                <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
+                  {canEdit&&<select onChange={async e=>{const o=e.target.value;if(!o)return;e.target.value="";const cur=it.hsParts||[];const names=cur.map(x=>typeof x==="object"?x.name:x);if(names.includes(o))return;const next=[...cur,{name:o,techId:tech.id,techName:tech.name}];await db.updateInvStatus(it._dbId,{hsParts:next});const existJ=jobs.find(j=>j.component==="housing"&&j.remark==="HS Parts: "+o&&!j.deleted&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())));if(!existJ)await db.createJob({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:hsPartsSJ?[{name:hsPartsSJ.name,option:o}]:[],remark:"HS Parts: "+o,qty:1,status:"completed",dateDone:new Date().toISOString(),mode:"service",component:"housing"});}} onClick={e=>e.stopPropagation()} style={{...bI,width:"auto",fontSize:11,padding:"4px 6px",color:T.accent}} defaultValue=""><option value="">{"🔩 + "+LL.hsPartsLabel}</option>{hsPartsOpts.filter(o=>!(it.hsParts||[]).map(x=>typeof x==="object"?x.name:x).includes(o)).map(o=><option key={o} value={o}>{o}</option>)}</select>}
+                  {(it.hsParts||[]).map((o,oi)=>{const tag=typeof o==="object"?o:{name:o,techId:null,techName:""};const isOwn=tag.techId===tech.id;return <span key={oi} style={{display:"inline-flex",alignItems:"center",gap:2,padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:"rgba(201,168,76,0.15)",color:T.accent}}>{tag.name}{tag.techName&&<span style={{fontSize:8,color:T.dim}}>-{tag.techName}</span>}{canEdit&&isOwn&&<button onClick={async(e)=>{e.stopPropagation();const next=(it.hsParts||[]).filter((_,i)=>i!==oi);await db.updateInvStatus(it._dbId,{hsParts:next});const existJ=jobs.find(j=>j.component==="housing"&&j.remark==="HS Parts: "+tag.name&&!j.deleted&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())));if(existJ)await db.deleteJob(existJ.id);}} style={{background:"rgba(239,68,68,0.15)",border:"none",color:T.danger,cursor:"pointer",fontSize:16,padding:"2px 6px",borderRadius:4,marginLeft:2,lineHeight:1}}>×</button>}{canEdit&&!isOwn&&tag.techId&&<span style={{fontSize:8,color:T.dim,marginLeft:2}}>🔒</span>}</span>;})}
+                </div>
+                {canEdit&&(it.hsParts||[]).length>0&&<input style={{...bI,fontSize:11,padding:"4px 6px",marginTop:4,border:`1px solid ${it.hsPartsRemark?T.accent:T.border}`}} placeholder={LL.hsPartsRemark} defaultValue={it.hsPartsRemark||""} onBlur={e=>db.updateInvStatus(it._dbId,{hsPartsRemark:e.target.value})} onClick={e=>e.stopPropagation()}/>}
+              </div>}
+              {/* Dynamic extra housing sub-jobs */}
+              {extraHousingSJs.map(sj=><DynTagSection key={sj._dbId} it={it} sj={sj} component="housing" color={T.accent} icon="🔧"/>)}
+              {/* Dynamic extra repair sub-jobs in housing */}
+              {extraRepairSJs.map(sj=><DynTagSection key={sj._dbId} it={it} sj={sj} component="housing" color={T.muted} icon="🛠"/>)}
+              {/* Send to QC */}
+              <div style={{marginTop:8,padding:"8px 10px",background:"rgba(16,185,129,0.04)",borderRadius:6,border:`1px solid rgba(16,185,129,0.15)`}}>
+                {(()=>{const hasQcJob=jobs.some(j=>j.status==="qc-pending"&&j.component==="full"&&!j.deleted&&((it.imei&&j.imei===it.imei)||(it.serial&&j.serial&&j.serial.toUpperCase()===it.serial.toUpperCase())));return hasQcJob?<span style={{padding:"6px 14px",borderRadius:6,fontSize:13,fontWeight:700,background:"rgba(16,185,129,0.15)",color:T.success,display:"inline-block"}}>✅ Sent to QC</span>:<button onClick={async(e)=>{e.stopPropagation();if(!confirm(lang==="cn"?"确认发送到QC待检？":"Send this unit to QC for checking?"))return;await db.createJob({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:[],remark:"Sent to QC by "+tech.name,qty:1,status:"qc-pending",mode:"repair",component:"full",qcBy:""});}} style={{padding:"8px 20px",fontSize:14,fontWeight:700,background:T.success,color:"#fff",borderRadius:8,border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:6}}>📋 {lang==="cn"?"发送到QC":"Send to QC"}</button>;})()}
+              </div>
+              {/* Unfixable flag */}
+              <div style={{marginLeft:58,marginTop:6}}>
+                {it.hsUnfixable?<div style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",borderRadius:5,background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.3)"}}>
+                  <span style={{fontSize:12,color:T.danger,fontWeight:700}}>⚠ {LL.unfixableLabel}: {it.hsUnfixable}</span>
+                  <button onClick={async(e)=>{e.stopPropagation();await db.updateInvStatus(it._dbId,{hsUnfixable:""});}} style={{...gB,padding:"2px 6px",fontSize:9,marginLeft:"auto"}}>{LL.clearFlag}</button>
+                </div>:<button onClick={async(e)=>{e.stopPropagation();const uj=getUJ(it.imei,it.serial,jobs);const existCF=uj.find(j=>(j.redoReason||"").startsWith("CANNOT FIX"));if(existCF){alert(`${LL.alreadyFlagged}:\n${existCF.redoReason}\n\n${LL.qcDecide}`);return;}const reason=prompt(LL.unfixableReason);if(!reason)return;await db.updateInvStatus(it._dbId,{hsUnfixable:reason});await db.createJob({techId:tech.id,model:it.product,storage:it.size,color:it.color,grade:it.grade,batch:it.batchId,imei:it.imei,serial:it.serial,jobType:"New",subJobs:[],remark:"CANNOT FIX: "+reason,qty:1,status:"qc-pending",dateDone:new Date().toISOString(),mode:"repair",component:"full",redoReason:"CANNOT FIX: "+reason,redoRemark:"Flagged during housing by "+tech.name,qcBy:tech.name});}} style={{...bB,padding:"4px 10px",fontSize:11,background:"rgba(239,68,68,0.08)",color:T.danger,border:`1px solid rgba(239,68,68,0.2)`,borderRadius:5}}>{"⚠ "+LL.flagUnfixable}</button>}
+              </div>
+              {/* Parts Used */}
+              {PARTS_ENABLED&&(()=>{const hParts=(partsInv||[]).filter(p=>(p.category==="Housing"||p.category==="Battery")&&matchPartModel(p.model,it.product)&&p.qty>0&&!(it.partsUsed||[]).some(pu=>pu.id===p.id));return hParts.length>0||((it.partsUsed||[]).filter(pu=>pu.category==="Housing"||pu.category==="Battery").length>0);})()&&<div style={{marginLeft:58,marginTop:6}}>
+                <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
+                  <select onChange={async e=>{const pid=parseInt(e.target.value);if(!pid)return;e.target.value="";const part=(partsInv||[]).find(p=>p.id===pid);if(!part)return;if(part.qty<=0){alert(LL.outOfStock||"Out of stock!");return;}const cur=it.partsUsed||[];if(cur.some(pu=>pu.id===pid))return;const next=[...cur,{id:pid,name:part.name,category:part.category,color:part.color||"",usedAt:new Date().toISOString()}];const upd={partsUsed:next};if(part.category==="Housing"&&part.color)upd.cameraDetail={...(it.cameraDetail||{}),newColor:part.color};await db.updateInvStatus(it._dbId,upd);await db.usePart(pid,1);}} onClick={e=>e.stopPropagation()} style={{...bI,width:"auto",fontSize:11,padding:"4px 6px",color:T.accent}} defaultValue=""><option value="">{"🔩 + "+(LL.housingBattParts||"Housing/Battery Parts")}</option>{(partsInv||[]).filter(p=>(p.category==="Housing"||p.category==="Battery")&&matchPartModel(p.model,it.product)&&p.qty>0&&!(it.partsUsed||[]).some(pu=>pu.id===p.id)).map(p=><option key={p.id} value={p.id}>{p.name}{p.color?" · "+p.color:""} [{p.qty}]</option>)}</select>
+                  {(it.partsUsed||[]).map(pu=><span key={pu.id} style={{display:"inline-flex",alignItems:"center",gap:3,padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:"rgba(201,168,76,0.15)",color:T.accent}}>{pu.name}<button onClick={async(e)=>{e.stopPropagation();const next=(it.partsUsed||[]).filter(x=>x.id!==pu.id);await db.updateInvStatus(it._dbId,{partsUsed:next});await db.restockPart(pu.id,1);}} style={{background:"rgba(239,68,68,0.15)",border:"none",color:T.danger,cursor:"pointer",fontSize:16,padding:"2px 6px",borderRadius:4,marginLeft:2,lineHeight:1}}>×</button></span>)}
+                </div>
+              </div>}
+            </div>;})}</div>
+        </div>;})()}
+    </div>}
+
+    {hsConfirm&&<Mod title={LL.confirmHousingStep} onClose={()=>setHsConfirm(null)} w="400px">
+      <div style={{padding:10,background:T.inputBg,borderRadius:7,marginBottom:12}}>
+        <div style={{color:T.warning,fontWeight:700,fontSize:13,marginBottom:3}}>{hsConfirm.it.product}{hsConfirm.it.grade?" ("+hsConfirm.it.grade+")":""}</div>
+        <div style={{color:T.text,fontSize:12}}>{hsConfirm.it.product} {hsConfirm.it.size} {hsConfirm.it.color}</div>
+      </div>
+      <div style={{textAlign:"center",marginBottom:12}}>
+        <div style={{fontSize:14,fontWeight:600,color:T.text,marginBottom:4}}>{LL.confirmLabel}: {hsConfirm.step}</div>
+        <div style={{fontSize:11,color:T.dim}}>{LL.thisAction}</div>
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={()=>setHsConfirm(null)} style={{...gB,flex:1,justifyContent:"center",padding:"10px",fontSize:13}}>{LL.cancelLabel}</button>
+        <button onClick={()=>{handleHousingStep(hsConfirm.it,hsConfirm.step);setHsConfirm(null);}} style={{...bB,flex:1,justifyContent:"center",padding:"10px",fontSize:13,background:T.success,color:"#fff",borderRadius:8}}>{Ic.chk} {LL.confirmLabel}</button>
+      </div>
+    </Mod>}
+    {dupWarn&&<Mod title={LL.dupWarning+" - "+dupWarn.type} onClose={()=>setDupWarn(null)} w="450px">
+      <div style={{padding:10,background:"rgba(245,158,11,0.08)",borderRadius:7,marginBottom:12,border:"1px solid rgba(245,158,11,0.2)"}}>
+        <div style={{color:T.warning,fontWeight:700,fontSize:13,marginBottom:6}}>{Ic.tri} {LL.dupAlready} {dupWarn.type} {LL.dupWorkDone}</div>
+        <div style={{display:"grid",gap:4}}>{dupWarn.dups.map((d,i)=><div key={i} style={{display:"flex",gap:6,alignItems:"center",fontSize:12,padding:"4px 6px",background:T.inputBg,borderRadius:4}}>
+          <span style={{color:T.warning,fontWeight:700}}>{d.codeId}</span>
+          <span style={{color:T.text}}>{d.product}</span>
+          <span style={{color:T.muted,fontSize:10,marginLeft:"auto"}}>by {d.prevTechName} - {d.prevDate}</span>
+        </div>)}</div>
+      </div>
+      <div style={{fontSize:12,color:T.muted,marginBottom:12}}>{LL.dupExplain}</div>
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={()=>setDupWarn(null)} style={{...gB,flex:1,justifyContent:"center",padding:"10px",fontSize:13}}>{LL.cancelLabel}</button>
+        <button onClick={dupWarn.onConfirm} style={{...bB,flex:1,justifyContent:"center",padding:"10px",fontSize:13,background:T.warning,color:"#fff",borderRadius:8}}>{LL.submitAnyway}</button>
+      </div>
+    </Mod>}
+    {tab==="redo"&&<div><p style={{color:T.dim,fontSize:11,margin:"0 0 10px"}}>{LL.redoQueueDesc}</p>
+      {svcRedo.length>0&&<div style={{marginBottom:12}}>
+        {svcRedoGlass.length>0&&<><h4 style={{color:T.accent,fontSize:12,fontWeight:700,margin:"0 0 6px"}}>🔲 Glass Redo ({svcRedoGlass.length})</h4><div style={{display:"grid",gap:3,marginBottom:8}}>{svcRedoGlass.map(it=><div key={it._dbId} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",background:T.card,borderRadius:6,border:`1px solid ${T.border}`,borderLeft:`3px solid ${T.accent}`}}><span style={{color:T.warning,fontWeight:700,fontSize:12}}>{it.grade||"—"}</span><span style={{color:T.text,fontSize:11,flex:1}}>{it.product}{it.color?` · ${it.color}`:""}</span><span style={{fontSize:10,color:T.danger}}>{(it.redoHistory||[]).filter(r=>r.type==="glass").slice(-1).map(r=>r.reason).join("")}</span><span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(245,158,11,0.15)",color:T.warning}}>→ Glass tab</span></div>)}</div></>}
+        {svcRedoCam.length>0&&<><h4 style={{color:T.purple,fontSize:12,fontWeight:700,margin:"0 0 6px"}}>📷 Camera Redo ({svcRedoCam.length})</h4><div style={{display:"grid",gap:3,marginBottom:8}}>{svcRedoCam.map(it=><div key={it._dbId} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",background:T.card,borderRadius:6,border:`1px solid ${T.border}`,borderLeft:`3px solid ${T.purple}`}}><span style={{color:T.warning,fontWeight:700,fontSize:12}}>{it.grade||"—"}</span><span style={{color:T.text,fontSize:11,flex:1}}>{it.product}{it.color?` · ${it.color}`:""}</span><span style={{fontSize:10,color:T.danger}}>{(it.redoHistory||[]).filter(r=>r.type==="camera").slice(-1).map(r=>r.reason).join("")}</span><span style={{padding:"2px 6px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(245,158,11,0.15)",color:T.warning}}>→ Camera tab</span></div>)}</div></>}
+      </div>}
+      {allRedo.length>0&&<h4 style={{color:T.danger,fontSize:12,fontWeight:700,margin:"0 0 6px"}}>{LL.repair} Redo ({allRedo.length})</h4>}
+      {allRedo.length===0&&svcRedo.length===0?<div style={{textAlign:"center",padding:28,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`,fontSize:12}}>{LL.noRedo}</div>:<div style={{display:"grid",gap:6}}>{allRedo.map(j=>{const origTech=techs.find(t=>t.id===j.techId);const invIt=inv.find(i=>(j.imei&&i.imei===j.imei)||(j.serial&&i.serial&&i.serial.toUpperCase()===j.serial.toUpperCase()));const prevAttempts=jobs.filter(x=>x.id!==j.id&&((j.imei&&x.imei===j.imei)||(j.serial&&x.serial&&x.serial.toUpperCase()===j.serial.toUpperCase()))&&x.jobType==="Redo");return (<div key={j.id} style={{background:T.card,borderRadius:8,padding:"10px 12px",border:`1px solid ${T.border}`,borderLeft:`3px solid ${T.danger}`}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:6}}><div style={{flex:1,minWidth:140}}><div style={{display:"flex",gap:3,marginBottom:3,flexWrap:"wrap"}}><TB t={j.jobType}/><SB s={j.status} lang={lang} qcBy={j.qcBy} jobType={j.jobType}/>{invIt?.codeId&&<span style={{padding:"1px 4px",borderRadius:2,fontSize:9,fontWeight:700,background:"rgba(245,158,11,0.12)",color:T.warning}}>{invIt.codeId}</span>}</div><div style={{color:T.text,fontWeight:600,fontSize:13,marginBottom:1}}>{j.model}{j.storage?` · ${j.storage}`:""}{j.color?` · ${j.color}`:""}</div><div style={{fontSize:11,color:T.muted,marginBottom:2}}>Tech: {origTech?.name||j.techId}</div><div style={{fontSize:11,fontFamily:"monospace",color:T.muted,marginBottom:2}}>{j.imei&&<span style={{color:T.accent}}>I:{j.imei} </span>}{j.serial&&<span style={{color:T.purple}}>S:{j.serial}</span>}</div><SJBadges sjs={j.subJobs} lang={lang} allSJ={subJobs}/>{j.redoReason&&<div style={{fontSize:12,color:"#fff",fontWeight:600,padding:"4px 8px",background:T.danger,borderRadius:5,marginBottom:2}}>⚠ {j.redoReason}{j.redoRemark?` — ${j.redoRemark}`:""}{j.redoSubJobs?` [${j.redoSubJobs}]`:""}</div>}{j.qcBy&&<div style={{fontSize:10,color:T.dim}}>{LL.flaggedBy}: {j.qcBy}</div>}{prevAttempts.length>0&&<details style={{marginTop:3}}><summary style={{fontSize:10,color:T.warning,cursor:"pointer"}}>{LL.prevAttempts} ({prevAttempts.length})</summary><div style={{padding:"3px 0",fontSize:10,color:T.muted}}>{prevAttempts.map((p,pi)=>{const pt=techs.find(t=>t.id===p.techId);return <div key={pi}>• {pt?.name||p.techId}: {p.redoRemark||p.remark||sjS(p.subJobs)} ({(SBL[lang]||SBL.en)[p.status]||p.status})</div>;})}</div></details>}</div><button onClick={()=>handlePickUp(j)} style={{...pB,padding:"8px 14px",fontSize:12,flexShrink:0}}>{Ic.rep} {LL.pickUp}</button></div></div>);})}</div>}</div>}
+    {tab==="qcStatus"&&<div>{myQC.length===0?<div style={{textAlign:"center",padding:28,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`,fontSize:12}}>{LL.allClear}</div>:<div style={{display:"grid",gap:6}}>{myQC.map(j=><JC key={j.id} j={j}/>)}</div>}</div>}
+    {tab==="overview"&&tech.senior&&(()=>{const aoList=(buyerOrders||[]).filter(o=>o.status!=="delivered"&&o.status!=="pending");return <div>
+      <h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>📊 Overview</h3>
+      {aoList.length>0&&<div style={{marginBottom:14}}>
+        <h4 style={{color:T.accent,fontSize:12,fontWeight:700,margin:"0 0 6px"}}>📦 {lang==="cn"?"活跃转移":"Active Transfers"} ({aoList.length})</h4>
+        <div style={{display:"grid",gap:4}}>{aoList.sort((a,b)=>{const p={urgent:0,rush:1,normal:2};return(p[a.priority]||2)-(p[b.priority]||2);}).map(o=>{const buyer=(buyers||[]).find(b=>b.id===o.buyer_id);const oItems=(orderItems||[]).filter(oi=>oi.order_id===o.id);const sm=(o.notes||"").match(/^SCOPE:([^|]*)\|/);const sc=sm?sm[1].split(","):["glass","camera","housing"];const doneCount=oItems.filter(oi=>{const it=inv.find(i=>i._dbId===oi.inventory_id);if(!it)return false;return(!sc.includes("glass")||it.glassStatus==="serviced")&&(!sc.includes("camera")||it.cameraStatus==="serviced")&&(!sc.includes("housing")||it.housingStatus==="serviced");}).length;const pct=oItems.length>0?Math.round(doneCount/oItems.length*100):0;const pColor=o.priority==="urgent"?T.danger:o.priority==="rush"?T.warning:T.accent;
+          const isExp=ovExpOrder===o.id;const stIcon=(st)=>st==="serviced"?"✅":st==="washing"?"🟣":st==="service"?"🟡":st==="partial"?"☑️":"⬜";
+          return <div key={o.id} style={{background:T.card,borderRadius:7,padding:"8px 12px",border:`1px solid ${T.border}`,borderLeft:`3px solid ${pColor}`}}>
+            <div onClick={()=>setOvExpOrder(isExp?null:o.id)} style={{cursor:"pointer"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:4}}>
+                <div style={{display:"flex",gap:4,alignItems:"center"}}>{o.priority!=="normal"&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:700,background:`${pColor}18`,color:pColor}}>{o.priority==="urgent"?"URGENT":"RUSH"}</span>}<span style={{color:T.accent,fontWeight:700,fontSize:12}}>{o.order_no}</span><span style={{color:T.text,fontSize:11}}>{buyer?.name||"—"}</span><span style={{color:T.dim,fontSize:10}}>{isExp?"▲":"▼"}</span></div>
+                <div style={{display:"flex",gap:4,alignItems:"center"}}><span style={{fontSize:11,fontWeight:700,color:pct===100?T.success:T.muted}}>{doneCount}/{oItems.length}</span>{o.delivery_date&&<span style={{fontSize:10,color:T.dim}}>📅 {o.delivery_date}</span>}</div>
+              </div>
+              <div style={{height:4,borderRadius:2,background:"rgba(255,255,255,0.06)",marginTop:4}}><div style={{height:"100%",width:pct+"%",borderRadius:2,background:pct===100?T.success:pColor}}/></div>
+            </div>
+            {isExp&&<div style={{marginTop:8,borderTop:`1px solid ${T.border}`,paddingTop:6}}>
+              <div style={{display:"flex",gap:3,marginBottom:6,fontSize:10,color:T.muted}}>
+                <span>{lang==="cn"?"待处理":"Pending"}: {oItems.length-doneCount}</span>
+                <span>{lang==="cn"?"完成":"Done"}: {doneCount}</span>
+                {sc.length<3&&<span style={{color:T.accent}}>{lang==="cn"?"范围":"Scope"}: {sc.join(", ")}</span>}
+              </div>
+              <div style={{maxHeight:300,overflow:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr style={{borderBottom:`1px solid ${T.border}`}}>
+                {["Code","Model","Color","Batch",sc.includes("housing")?"H":"",sc.includes("glass")?"G":"",sc.includes("camera")?"C":""].filter(Boolean).map(h=><th key={h} style={{padding:"4px",textAlign:["H","G","C"].includes(h)?"center":"left",color:T.dim,fontSize:9,fontWeight:600}}>{h}</th>)}
+              </tr></thead><tbody>{oItems.map(oi=>{const it=inv.find(i=>i._dbId===oi.inventory_id);if(!it)return null;const unitDone=(!sc.includes("glass")||it.glassStatus==="serviced")&&(!sc.includes("camera")||it.cameraStatus==="serviced")&&(!sc.includes("housing")||it.housingStatus==="serviced");
+                return <tr key={oi.id} style={{borderBottom:`1px solid ${T.border}`,background:unitDone?"rgba(16,185,129,0.04)":"transparent"}}>
+                  <td style={{padding:"4px",color:T.warning,fontWeight:700,fontSize:11}}>{it.grade||"—"}</td>
+                  <td style={{padding:"4px",color:T.text,fontSize:10}}>{it.product}</td>
+                  <td style={{padding:"4px",color:T.muted,fontSize:10}}>{it.color||"—"}</td>
+                  <td style={{padding:"4px",color:T.dim,fontSize:9,fontFamily:"monospace"}}>{it.batchId}</td>
+                  {sc.includes("housing")&&<td style={{padding:"4px",textAlign:"center",fontSize:12}}>{stIcon(it.housingStatus)}</td>}
+                  {sc.includes("glass")&&<td style={{padding:"4px",textAlign:"center",fontSize:12}}>{stIcon(it.glassStatus)}</td>}
+                  {sc.includes("camera")&&<td style={{padding:"4px",textAlign:"center",fontSize:12}}>{stIcon(it.cameraStatus)}</td>}
+                </tr>;})}</tbody></table></div>
+            </div>}
+          </div>;})}</div>
+      </div>}
+      <div style={{marginBottom:14}}>
+        <h4 style={{color:T.warning,fontSize:12,fontWeight:700,margin:"0 0 6px"}}>📦 {lang==="cn"?"批次进度":"Batch Progress"}</h4>
+        <div style={{display:"grid",gap:4}}>{[...new Set(inv.map(i=>i.batchId))].filter(Boolean).map(b=>{const bItems=inv.filter(i=>i.batchId===b);return <div key={b} style={{background:T.card,borderRadius:6,padding:"8px 10px",border:`1px solid ${T.border}`}}>
+            <div style={{color:T.accent,fontWeight:700,fontSize:11,marginBottom:4}}>{b} ({bItems.length})</div>
+            <div style={{display:"flex",gap:10,fontSize:10}}><span style={{color:T.warning}}>🏠 {bItems.filter(i=>i.housingStatus==="serviced").length}/{bItems.length}</span><span style={{color:T.accent}}>🔲 {bItems.filter(i=>i.glassStatus==="serviced").length}/{bItems.length}</span><span style={{color:T.purple}}>📷 {bItems.filter(i=>i.cameraStatus==="serviced").length}/{bItems.length}</span></div>
+          </div>;})}</div>
+      </div>
+      <div style={{marginBottom:14}}>
+        <h4 style={{color:T.success,fontSize:12,fontWeight:700,margin:"0 0 6px"}}>👥 {lang==="cn"?"今日工作":"Today's Activity"}</h4>
+        <div style={{display:"grid",gap:3}}>{techs.filter(t=>t.role!=="admin").map(t=>{const tj=jobs.filter(j=>j.techId===t.id&&j.dateIn.startsWith(td()));const h=tj.filter(j=>j.component==="housing").length;const g=tj.filter(j=>j.component==="glass").length;const c=tj.filter(j=>j.component==="camera").length;const r=tj.filter(j=>!j.component||j.component==="full").length;if(h+g+c+r===0)return null;
+          return <div key={t.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",background:T.card,borderRadius:5,border:`1px solid ${T.border}`}}><span style={{color:T.text,fontWeight:600,fontSize:11,minWidth:60}}>{t.name}</span><div style={{display:"flex",gap:6,fontSize:10}}>{h>0&&<span style={{color:T.warning}}>🏠{h}</span>}{g>0&&<span style={{color:T.accent}}>🔲{g}</span>}{c>0&&<span style={{color:T.purple}}>📷{c}</span>}{r>0&&<span style={{color:T.success}}>🔧{r}</span>}</div></div>;}).filter(Boolean)}</div>
+      </div>
+      <div>
+        <h4 style={{color:T.danger,fontSize:12,fontWeight:700,margin:"0 0 6px"}}>⏱ {lang==="cn"?"等待最久":"Longest Waiting"}</h4>
+        <div style={{display:"grid",gap:3}}>{inv.filter(i=>{const uj=getUJ(i.imei,i.serial,jobs);return uj.length>0&&(i.glassStatus!=="serviced"||i.cameraStatus!=="serviced"||i.housingStatus!=="serviced");}).map(i=>{const uj=getUJ(i.imei,i.serial,jobs);const first=uj.sort((a,b)=>new Date(a.dateIn)-new Date(b.dateIn))[0];return{...i,days:first?Math.floor((Date.now()-new Date(first.dateIn))/86400000):0};}).sort((a,b)=>b.days-a.days).slice(0,10).map(it=><div key={it._dbId} style={{display:"flex",alignItems:"center",gap:6,padding:"5px 10px",background:T.card,borderRadius:5,border:`1px solid ${it.days>=5?T.danger:it.days>=3?T.warning:T.border}`}}>
+          <span style={{color:T.warning,fontWeight:700,fontSize:11,minWidth:40}}>{it.grade||"—"}</span>
+          <span style={{color:T.text,fontSize:10,flex:1}}>{it.product}{it.color?" "+it.color:""}</span>
+          <span style={{fontSize:11,fontWeight:700,color:it.days>=5?T.danger:it.days>=3?T.warning:T.dim}}>{it.days}d</span>
+          <span style={{fontSize:10}}>{it.housingStatus==="serviced"?"🏠✅":"🏠"+(it.housingStatus==="partial"?"☑️":"⬜")}</span>
+          <span style={{fontSize:10}}>{it.glassStatus==="serviced"?"🔲✅":"🔲⬜"}</span>
+          <span style={{fontSize:10}}>{it.cameraStatus==="serviced"?"📷✅":"📷⬜"}</span>
+        </div>)}</div>
+      </div>
+    </div>;})()}
+    {tab==="chat"&&(()=>{const msgs=chatMsgs||[];const pinned=msgs.filter(m=>m.pinned);const unpinned=msgs.filter(m=>!m.pinned);const handleSend=async()=>{const msg=(tChatReply?tChatReply+" ":"")+tChatMsg.trim();if(!msg)return;await db.sendChat(tech.id,tech.name,msg,tChatRef.trim());setTChatMsg("");setTChatRef("");setTChatReply("");};return <div>
+      <h3 style={{color:T.text,fontSize:14,fontWeight:700,margin:"0 0 10px"}}>{LL.chatLabel}</h3>
+      <div style={{background:T.card,borderRadius:10,padding:14,border:`1px solid ${T.border}`,marginBottom:14}}>
+        {tChatReply&&<div style={{display:"flex",alignItems:"center",gap:4,marginBottom:6,padding:"4px 8px",background:"rgba(201,168,76,0.08)",borderRadius:4}}><span style={{fontSize:11,color:T.accent}}>{tChatReply}</span><button onClick={()=>setTChatReply("")} style={{background:"none",border:"none",color:T.dim,cursor:"pointer",fontSize:14,padding:"0 4px"}}>×</button></div>}
+        <div style={{display:"flex",gap:6,marginBottom:6}}><input style={{...bI,flex:1,fontSize:13}} placeholder={LL.typeMsg} value={tChatMsg} onChange={e=>setTChatMsg(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleSend()}/><button onClick={handleSend} style={{...pB,padding:"8px 14px",fontSize:12}} disabled={!tChatMsg.trim()}>{LL.send}</button></div>
+        <input style={{...bI,fontSize:11,padding:"5px 8px"}} placeholder={LL.unitRefHint} value={tChatRef} onChange={e=>setTChatRef(e.target.value)}/>
+      </div>
+      {pinned.length>0&&<div style={{marginBottom:12}}><div style={{color:T.warning,fontSize:11,fontWeight:700,marginBottom:4}}>📌 {LL.pinned}</div>{pinned.map(m=><div key={m.id} style={{padding:"8px 10px",background:"rgba(245,158,11,0.06)",borderRadius:6,border:`1px solid rgba(245,158,11,0.2)`,marginBottom:4}}>
+        <div style={{display:"flex",gap:4,alignItems:"center",marginBottom:2}}><span style={{fontSize:12,fontWeight:700,color:m.user_id==="admin"?T.accent:T.text}}>{m.user_name}</span><span style={{fontSize:10,color:T.dim}}>{fD(m.created_at)}</span>{m.unit_ref&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(201,168,76,0.1)",color:T.accent}}>{m.unit_ref}</span>}</div>
+        <div style={{fontSize:12,color:T.text,whiteSpace:"pre-wrap"}}>{m.message}</div>
+        <button onClick={()=>setTChatReply("@"+m.user_name)} style={{...gB,padding:"2px 6px",fontSize:9,marginTop:3}}>{LL.reply}</button>
+      </div>)}</div>}
+      <div style={{display:"grid",gap:4}}>{unpinned.map(m=><div key={m.id} style={{padding:"8px 10px",background:m.user_id==="admin"?"rgba(201,168,76,0.05)":T.card,borderRadius:6,border:`1px solid ${T.border}`}}>
+        <div style={{display:"flex",gap:4,alignItems:"center",marginBottom:2}}><span style={{fontSize:12,fontWeight:700,color:m.user_id==="admin"?T.accent:T.text}}>{m.user_name}</span><span style={{fontSize:10,color:T.dim}}>{fD(m.created_at)}</span>{m.unit_ref&&<span style={{padding:"1px 5px",borderRadius:3,fontSize:9,fontWeight:600,background:"rgba(201,168,76,0.1)",color:T.accent}}>{m.unit_ref}</span>}</div>
+        <div style={{fontSize:12,color:T.text,whiteSpace:"pre-wrap"}}>{m.message}</div>
+        <button onClick={()=>setTChatReply("@"+m.user_name)} style={{...gB,padding:"2px 6px",fontSize:9,marginTop:3}}>{LL.reply}</button>
+      </div>)}</div>
+      {msgs.length===0&&<div style={{textAlign:"center",padding:30,color:T.dim,background:T.card,borderRadius:10,border:`1px solid ${T.border}`}}>{LL.noMsgsYet}</div>}
+    </div>;})()}
+    {showForm&&<Mod title={tab==="service"?LL.service:LL.repair} onClose={()=>setShowForm(false)} w="540px"><TJF form={form} setForm={setForm} subJobs={subJobs} onSubmit={handleAdd} label={<>{Ic.plus} {LL.logJob}</>} scanner={scanner} setScanner={setScanner} jobs={jobs} editId={null} inv={inv} techs={techs} lang={lang} mode={tab==="service"?"service":"repair"} db={db}/></Mod>}
+    {editId&&<Mod title={LL.editJobTitle} onClose={()=>{setEditId(null);setForm(ef);}} w="540px"><EditJobForm form={form} setForm={setForm} subJobs={subJobs} onSubmit={handleSave} lang={lang}/></Mod>}
+    {escJob&&<Mod title={`⚠ ${LL.escalate}`} onClose={()=>setEscJob(null)} w="480px"><div style={{marginBottom:12,padding:10,background:"rgba(239,68,68,0.06)",borderRadius:8,border:`1px solid rgba(239,68,68,0.2)`}}><div style={{color:T.text,fontWeight:600,fontSize:13,marginBottom:2}}>{escJob.model}{escJob.storage?` · ${escJob.storage}`:""}</div><div style={{fontSize:11,fontFamily:"monospace",color:T.muted}}>{escJob.imei&&<span style={{color:T.accent}}>I:{escJob.imei} </span>}{escJob.serial&&<span style={{color:T.purple}}>S:{escJob.serial}</span>}</div><SJBadges sjs={escJob.subJobs} lang={lang} allSJ={subJobs}/></div><Fld label={LL.escalateHint}><textarea style={{...bI,minHeight:60,resize:"vertical"}} placeholder={LL.escalateHint} value={escReason} onChange={e=>setEscReason(e.target.value)} autoFocus/></Fld><button onClick={handleEscalate} style={{...bB,width:"100%",justifyContent:"center",padding:"10px 14px",fontSize:14,background:T.warning,color:"#fff",borderRadius:8}}>{Ic.tri} {LL.escalate}</button></Mod>}
+    {cfJob&&<Mod title={`❌ ${LL.cannotFix}`} onClose={()=>setCfJob(null)} w="480px"><div style={{marginBottom:12,padding:10,background:"rgba(239,68,68,0.06)",borderRadius:8,border:`1px solid rgba(239,68,68,0.2)`}}><div style={{color:T.text,fontWeight:600,fontSize:13,marginBottom:2}}>{cfJob.model}{cfJob.storage?` · ${cfJob.storage}`:""}</div><div style={{fontSize:11,fontFamily:"monospace",color:T.muted}}>{cfJob.imei&&<span style={{color:T.accent}}>I:{cfJob.imei} </span>}{cfJob.serial&&<span style={{color:T.purple}}>S:{cfJob.serial}</span>}</div><SJBadges sjs={cfJob.subJobs} lang={lang} allSJ={subJobs}/></div><Fld label={LL.cannotFix}><select style={bI} value={cfReason} onChange={e=>setCfReason(e.target.value)}><option value="">{LL.select}...</option>{unfixableOpts.map(o=><option key={o} value={o}>{o}</option>)}{!unfixableOpts.length&&<>{["Face ID","WiFi","Baseband","Touch","NFC","Other"].map(o=><option key={o} value={o}>{o}</option>)}</>}</select></Fld><Fld label={LL.whatTried}><textarea style={{...bI,minHeight:60,resize:"vertical"}} placeholder={LL.whatTried} value={cfTried} onChange={e=>setCfTried(e.target.value)}/></Fld><button onClick={handleCannotFix} disabled={!cfReason} style={{...bB,width:"100%",justifyContent:"center",padding:"10px 14px",fontSize:14,background:T.danger,color:"#fff",borderRadius:8,opacity:cfReason?1:0.4}}>{Ic.tri} {LL.cannotFix}</button></Mod>}
+    {scanner&&<Scanner onScan={v=>{if(v.type==="imei")setForm(p=>({...p,imei:v.value}));else setForm(p=>({...p,serial:v.value}));setScanner(false);}} onClose={()=>setScanner(false)}/>}
+  </div>);
+}
+
+export default function App(){
+  const data=useDataService();const{user,techs,jobs,subJobs,inv,repairHouses,adminLogs,remarkCodes,feedback,commRates,partsInv,chatMsgs,notifs,buyers,buyerOrders,orderItems,db,loading}=data;
+  // QC is now inventory-based - no auto qc-pending trigger needed
+  const[lang,setLang]=useState("en");
+  const[themeMode,setThemeMode]=useState(()=>{try{return localStorage.getItem("fx_theme")||"dark";}catch{return "dark";}});
+  const[fxSize,setFxSize]=useState(()=>{try{return parseFloat(localStorage.getItem("fx_size"))||1;}catch{return 1;}});
+  const setTheme=(m)=>{setThemeMode(m);try{localStorage.setItem("fx_theme",m);}catch{}};
+  const setSize=(s)=>{setFxSize(s);try{localStorage.setItem("fx_size",String(s));}catch{}};
+  const[showChgPw,setShowChgPw]=useState(false);const[curPw,setCurPw]=useState("");const[newPwVal,setNewPwVal]=useState("");const[pwMsg,setPwMsg]=useState("");const[showTV,setShowTV]=useState(false);const[showFB,setShowFB]=useState(false);const[fbType,setFbType]=useState("bug");const[fbMsg,setFbMsg]=useState("");const[fbSent,setFbSent]=useState(false);const[fbFile,setFbFile]=useState(null);const[fbUploading,setFbUploading]=useState(false);const[showNotifPanel,setShowNotifPanel]=useState(false);
+  const unseenNotifCount=useMemo(()=>{if(!user||!notifs)return 0;return notifs.filter(n=>!n.seen&&(n.user_id===user.id||n.user_id==='all')).length;},[notifs,user]);
+  const LL=LANG[lang];
+  const handleChangePw=()=>{if(!curPw||!newPwVal)return;
+    if(user.id==="admin"){if(curPw!=="12Alanna34"){setPwMsg(LL.pwWrong);return;}setPwMsg("Master admin password is hardcoded — cannot change here.");return;}
+    const t=techs.find(x=>x.id===user.id);if(!t||t.password!==curPw){setPwMsg(LL.pwWrong);return;}
+    db.updateTechPassword(user.id,newPwVal);setPwMsg(LL.pwChanged);setCurPw("");setNewPwVal("");setTimeout(()=>{setShowChgPw(false);setPwMsg("");},1500);
+  };
+  applyTheme(themeMode);
+  if(loading)return (<div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:T.bg,fontFamily:"'Outfit',sans-serif"}}><style>{mCSS}</style><div style={{textAlign:"center"}}><div style={{display:"inline-flex",alignItems:"center",gap:8,marginBottom:12}}>{Ic.logo}<span style={{fontSize:22,fontWeight:800,color:T.text}}>KIS<span style={{color:"#C9A84C"}}> Repair</span></span></div><div style={{color:T.dim,fontSize:14}}>Loading...</div></div></div>);
+  if(!user)return (<Login onLogin={(id,pw)=>db.login(id,pw)} lang={lang} setLang={setLang} themeMode={themeMode} setTheme={setTheme}/>);
+  return (<div style={{minHeight:"100vh",background:T.bg,fontFamily:"'Outfit',sans-serif",color:T.text,zoom:fxSize}}><style>{mCSS}</style><Hdr user={user} onLogout={db.logout} lang={lang} setLang={setLang} themeMode={themeMode} setTheme={setTheme} fxSize={fxSize} setSize={setSize} onChangePw={()=>{setShowChgPw(true);setCurPw("");setNewPwVal("");setPwMsg("");}} onRefresh={db.refreshAll} onTV={null} onFeedback={()=>{setShowFB(true);setFbType("bug");setFbMsg("");setFbSent(false);setFbFile(null);setFbUploading(false);}} onNotif={()=>setShowNotifPanel(true)} notifCount={unseenNotifCount}/>{(user.role==="admin"||user.role==="superadmin")?<Admin techs={techs} jobs={jobs} subJobs={subJobs} inv={inv} db={db} lang={lang} user={user} repairHouses={repairHouses} adminLogs={adminLogs} remarkCodes={remarkCodes} feedback={feedback} commRates={commRates} partsInv={partsInv} chatMsgs={chatMsgs} notifs={notifs} buyers={buyers} buyerOrders={buyerOrders} orderItems={orderItems}/>:<TDash tech={techs.find(t=>t.id===user.id)} jobs={jobs.filter(j=>!j.deleted)} subJobs={subJobs} inv={inv} techs={techs} db={db} lang={lang} remarkCodes={remarkCodes} partsInv={partsInv} chatMsgs={chatMsgs} notifs={notifs} buyers={buyers} buyerOrders={buyerOrders} orderItems={orderItems}/>}
+    {showTV&&<TVDash techs={techs} jobs={jobs} inv={inv} subJobs={subJobs} lang={lang} onClose={()=>setShowTV(false)}/>}
+    {showChgPw&&<Mod title={`🔑 ${LL.changePw}`} onClose={()=>setShowChgPw(false)}><Fld label={LL.currentPw}><input style={bI} type="password" value={curPw} onChange={e=>setCurPw(e.target.value)} autoFocus/></Fld><Fld label={LL.newPw2}><input style={bI} type="password" value={newPwVal} onChange={e=>setNewPwVal(e.target.value)}/></Fld>{pwMsg&&<div style={{padding:6,borderRadius:4,background:pwMsg.includes("✓")?"rgba(16,185,129,0.1)":"rgba(239,68,68,0.1)",color:pwMsg.includes("✓")?T.success:T.danger,fontSize:12,fontWeight:600,marginBottom:8}}>{pwMsg}</div>}<button onClick={handleChangePw} style={{...pB,width:"100%",justifyContent:"center"}}>{LL.save}</button></Mod>}
+    {showFB&&<Mod title={"💬 "+LL.feedbackTitle} onClose={()=>setShowFB(false)}>{fbSent?<div style={{textAlign:"center",padding:20}}><div style={{fontSize:22,marginBottom:8}}>✅</div><div style={{color:T.success,fontSize:14,fontWeight:600}}>{LL.feedbackSent}</div></div>:<><div style={{display:"flex",gap:4,marginBottom:10}}>{[["bug","🔴 "+LL.feedbackBug],["suggestion","💡 "+LL.feedbackSuggestion],["other","💬 "+LL.feedbackOther]].map(([k,l])=><button key={k} onClick={()=>setFbType(k)} style={{...bB,padding:"6px 12px",fontSize:12,background:fbType===k?"rgba(201,168,76,0.15)":"transparent",color:fbType===k?T.accent:T.dim,border:`1px solid ${fbType===k?T.accent:T.border}`}}>{l}</button>)}</div><Fld label={LL.feedbackHint}><textarea style={{...bI,minHeight:80,resize:"vertical"}} placeholder={LL.feedbackHint} value={fbMsg} onChange={e=>setFbMsg(e.target.value)} autoFocus/></Fld>
+            <Fld label={lang==="cn"?"附件（可选）":"Attachment (optional)"}><div style={{display:"flex",alignItems:"center",gap:6}}><label style={{...gB,padding:"6px 12px",fontSize:12,cursor:"pointer"}}>📎 {lang==="cn"?"选择文件":"Choose File"}<input type="file" accept="image/*,.pdf,.doc,.docx" onChange={e=>{const f=e.target.files[0];if(f)setFbFile(f);}} style={{display:"none"}}/></label>{fbFile&&<span style={{fontSize:11,color:T.text}}>{fbFile.name} ({Math.round(fbFile.size/1024)}KB)</span>}{fbFile&&<button onClick={()=>setFbFile(null)} style={{background:"none",border:"none",color:T.danger,cursor:"pointer",fontSize:14}}>×</button>}</div></Fld>
+            <button onClick={async()=>{if(!fbMsg.trim())return;setFbUploading(true);let fileUrl=null;if(fbFile){fileUrl=await db.uploadFeedbackFile(fbFile);}const ok=await db.submitFeedback(user.id,user.name,fbType,fbMsg.trim(),fileUrl);setFbUploading(false);if(ok){setFbSent(true);setFbFile(null);setTimeout(()=>setShowFB(false),1500);}}} disabled={!fbMsg.trim()||fbUploading} style={{...pB,width:"100%",justifyContent:"center",opacity:fbMsg.trim()&&!fbUploading?1:0.4}}>{fbUploading?(lang==="cn"?"上传中...":"Uploading..."):("💬 "+LL.feedbackSend)}</button></>}</Mod>}
+    {showNotifPanel&&<Mod title={"🔔 "+LL.notifications} onClose={()=>setShowNotifPanel(false)} w="520px">
+      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:8}}>{unseenNotifCount>0&&<button onClick={()=>db.markAllNotifSeen(user.id)} style={{...gB,padding:"4px 10px",fontSize:11}}>Mark all read</button>}</div>
+      {(()=>{const myNotifs=(notifs||[]).filter(n=>n.user_id===user.id||n.user_id==='all').slice(0,50);if(!myNotifs.length)return <div style={{textAlign:"center",padding:24,color:T.dim,fontSize:13}}>{LL.noNotif}</div>;const tIcon=(t)=>t==='redo'?'🔴':t==='qc-pass'?'🟢':t==='batch'?'📦':t==='outsource'?'💰':t==='info'?'🟡':'🔔';return <div style={{display:"grid",gap:4}}>{myNotifs.map(n=><div key={n.id} style={{padding:"8px 10px",background:n.seen?"transparent":"rgba(201,168,76,0.06)",borderRadius:6,border:`1px solid ${n.seen?T.border:T.accent}`,display:"flex",gap:8,alignItems:"flex-start"}}>
+        <span style={{fontSize:16,flexShrink:0,marginTop:2}}>{tIcon(n.type)}</span>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{color:T.text,fontSize:12,fontWeight:n.seen?400:700}}>{n.title}</div>
+          {n.detail&&<div style={{color:T.muted,fontSize:11,marginTop:1}}>{n.detail}</div>}
+          <div style={{color:T.dim,fontSize:10,marginTop:2}}>{fD(n.created_at)}</div>
+        </div>
+        {!n.seen&&<button onClick={()=>db.markNotifSeen(n.id)} style={{...gB,padding:"2px 6px",fontSize:9,flexShrink:0}}>Read</button>}
+      </div>)}</div>;})()}
+    </Mod>}
+  </div>);
 }
